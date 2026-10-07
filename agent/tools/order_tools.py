@@ -35,13 +35,17 @@ from service.order.order_service import OrderService
 
 # 名字拆解：get_user_orders = get（获取）+ user（用户的）+ orders（订单，复数=列表）
 @tool
-def get_user_orders(user_id: str) -> dict:
+def get_user_orders(user_id: str = "") -> dict:
     """查询当前用户名下的订单列表摘要。
 
+    当用户提到「我买的 / 我的订单 / 我的商品」等却未给出明确订单号时，
+    必须先调用本工具获取用户的订单列表，再定位或向用户确认是哪一笔。
+
     Args:
-        user_id: 当前用户 ID（由系统注入）
+        user_id: 系统自动注入，无需填写
     """
-    # user_id 虽然在说明书里写给模型看，但真实值由 Tool Node 执行前强制注入
+    # user_id 虽然在说明书里写给模型看，但真实值由 Tool Node 执行前强制注入；
+    # 参数设为可选：模型不需要知道身份值，就不会反问用户要 user_id
     service = OrderService()
     orders = service.list_user_orders(user_id)
     return {
@@ -52,14 +56,14 @@ def get_user_orders(user_id: str) -> dict:
     }
 
 
-# 名字拆解：get_order = get（获取）+ order（订单，单数=单笔），对应上面的复数
+# 名字拆解：get_order = get（获取）+ order（订单，单数=查单笔），对应上面的复数
 @tool
-def get_order(order_id: str, user_id: str) -> dict:
+def get_order(order_id: str, user_id: str = "") -> dict:
     """根据订单号查询订单详情。
 
     Args:
         order_id: 订单号，从用户问题或对话上下文中获得
-        user_id: 当前用户 ID（由系统注入）
+        user_id: 系统自动注入，无需填写
     """
     service = OrderService()
     info = service.get_order(order_id=order_id, user_id=user_id)

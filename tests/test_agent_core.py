@@ -105,6 +105,40 @@ class TestStateUpdate(unittest.TestCase):
         self.assertEqual(update, {})
 
 
+class TestOwnershipBoundary(unittest.TestCase):
+    """越权防护回归：物流/售后查询必须校验订单归属。
+
+    背景：真实模型评测发现「查他人订单物流」可以绕过 get_order 的归属校验
+    （模型直接调 get_logistics 就能拿到别人订单的运单信息），已在 Service
+    层补上归属检查——本用例保证这个漏洞不会回来。
+    """
+
+    def setUp(self) -> None:
+        self.db = BusinessDatabase(db_path=PROJECT_ROOT / "data" / "test_ecom.db")
+        self.db.reset_and_seed(seed_demo_data)
+        set_business_db(self.db)
+
+    def test_logistics_denied_for_other_user(self) -> None:
+        from service.logistics.logistics_service import LogisticsService
+
+        service = LogisticsService(self.db)
+        # A002（运单 SF123456）属于 U001：U002 按订单号或运单号都查不到
+        self.assertIsNone(service.get_for_order_context(order_id="A002", user_id="U002"))
+        self.assertIsNone(service.get_for_order_context(tracking_number="SF123456", user_id="U002"))
+        # 属主本人可以查到
+        self.assertIsNotNone(service.get_for_order_context(order_id="A002", user_id="U001"))
+
+    def test_after_sale_denied_for_other_user(self) -> None:
+        from service.after_sale.after_sale_service import AfterSaleService
+
+        service = AfterSaleService(self.db)
+        # A003 / AS001 属于 U001
+        self.assertIsNone(service.get_after_sale(order_id="A003", user_id="U002"))
+        self.assertIsNone(service.get_after_sale(after_sale_id="AS001", user_id="U002"))
+        # 属主本人可以查到
+        self.assertIsNotNone(service.get_after_sale(order_id="A003", user_id="U001"))
+
+
 class TestAgentLoop(unittest.TestCase):
     """Tool Calling Loop（Graph / Tool / Service / State）。"""
 

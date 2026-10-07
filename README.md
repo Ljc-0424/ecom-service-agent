@@ -99,7 +99,13 @@ Evaluation Layer（预留）← Trace ← Agent Run
 
 ```bash
 cd ecom-service-agent
-pip install fastapi uvicorn pydantic pydantic-settings langgraph langchain-core langchain-openai httpx
+
+# 方式一：uv（推荐）
+uv sync
+
+# 方式二：pip
+python -m venv .venv
+.venv/Scripts/pip install -e .
 ```
 
 ### 2. 配置环境变量
@@ -136,7 +142,7 @@ python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 ### 4. 跑测试
 
 ```bash
-python -m unittest tests.test_agent_core -v
+python -m pytest tests/ -q
 ```
 
 ---
@@ -192,16 +198,22 @@ Mock API **不是** Agent Tool，也不直接修改 Agent State。
 
 ---
 
-## 评测预留
+## 最小评测
 
-```text
-evaluation/
-├── datasets/sample_cases.json   # 示例用例（含 initial_state / expected）
-├── cases/case_schema.py         # 用例结构
-├── runner/runner.py             # Reset → Run → Trace → Evaluate
-├── metrics/metrics.py           # 过程指标 + 答案指标
-└── reports/                     # 报告输出
+```bash
+python -m evaluation.run_eval                  # 真实模型跑全部 case（需 .env）
+python -m evaluation.run_eval --case 转人工     # 只跑指定 case
 ```
+
+12 条 case 覆盖：订单列表 / 指定订单物流 / 库存 / 售后进度 / 知识检索 / 越权拦截 / 无效单号 / 多订单消歧 / 转人工 / 闲聊不调工具 / 超时未发货 / 组合查询。
+
+每条 case 断言三类**确定性可验证**的事实：
+
+- **工具选择**：该调的工具调了没有、不该调的是否没调（如闲聊不调业务工具）
+- **关键参数**：如 `get_order(order_id="A001")`、`get_inventory(product_name="Redmi K80")`
+- **State 维护**：orders_context 是否正确合并、active_order_id 是否未被 LLM 越权修改、该转人工时是否转
+
+最终回答的文字质量不自动打分（自然语言没有唯一正确答案），保存在 `evaluation/reports/*.json` 中供人工抽查。评测使用独立数据库 `data/eval_ecom.db`，每条 case 前重置为种子状态，保证**可重复**。
 
 原则：
 
@@ -231,4 +243,6 @@ Multi-Agent、MCP、A2A、复杂 Middleware、自动退款/取消/改地址、�
 | Phase 5 | RAG 知识库检索 | ✅ |
 | Phase 6 | 综合业务问题（订单+规则） | ✅ |
 | Phase 7 | Human Handoff + HandoffContext | ✅ |
-| 附加 | Mock Console + 前端 + 评测预留 | ✅ |
+| 附加 | Mock Console + 前端 | ✅ |
+| Phase 8 | 最小评测闭环（12 case，工具/参数/State 断言） | ✅ |
+| Phase 9 | 流式输出 / 可观测性 / Checkpointer | 进行中 |

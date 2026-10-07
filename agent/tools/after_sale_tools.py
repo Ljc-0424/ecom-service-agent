@@ -13,18 +13,21 @@ from service.after_sale.after_sale_service import AfterSaleService
 
 
 @tool
-def get_after_sale(order_id: str = "", after_sale_id: str = "") -> dict:
+def get_after_sale(order_id: str = "", after_sale_id: str = "", user_id: str = "") -> dict:
     """查询售后/退款状态。
 
     Args:
         order_id: 订单号（可选）
         after_sale_id: 售后单号（可选，与 order_id 至少提供一个）
+        user_id: 系统自动注入，无需填写
     """
     service = AfterSaleService()
-    # 「x or None」：空字符串统一转 None，Service 端好判断「参数有没有传」
+    # 「x or None」：空字符串统一转 None，Service 端好判断「参数有没有传」；
+    # user_id 传入后 Service 会校验归属，查别人的售后一律返回查无结果
     info = service.get_after_sale(
         after_sale_id=after_sale_id or None,
         order_id=order_id or None,
+        user_id=user_id or None,
     )
     if info is None:
         return {"success": False, "code": "not_found", "message": "未找到售后记录"}

@@ -78,18 +78,37 @@ class LogisticsService:
         self,
         order_id: Optional[str] = None,
         tracking_number: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Optional[LogisticsInfo]:
         """按订单号或运单号查询物流（Tool 层的统一入口）。
 
         【参数优先级】
           运单号最精确 → 优先用；没有运单号再用订单号；都没有 → None。
-          LLM 填参数不一定填哪个，这里统一兜住。
+
+        【归属校验（安全边界）】
+          传了 user_id 就校验物流所属订单的用户：查别人的物流一律返回 None。
+          这道检查必须在 Service 层做——只靠 LLM 自觉或只给 get_order 校验，
+          模型换一条查询路径就能绕过（评测真实抓到过这个漏洞）。
         """
         if tracking_number:
-            return self.get_by_tracking(tracking_number)
+            logi = self.get_by_tracking(tracking_number)
+            if logi is None:
+                return None
+            if user_id and not self._owned_by(logi.order_id, user_id):
+                return None
+            return logi
         if order_id:
+            if not self._owned_by(order_id, user_id):
+                return None
             return self.get_by_order(order_id)
         return None
+
+    def _owned_by(self, order_id: str, user_id: Optional[str]) -> bool:
+        """订单存在且属于该用户；user_id 为 None 时不校验（内部调用）。"""
+        if not user_id:
+            return True
+        order = self.db.get_order(order_id)
+        return order is not None and order.user_id == user_id
 
     @staticmethod
     def _to_info(logi) -> LogisticsInfo:

@@ -46,19 +46,29 @@ class AfterSaleService:
         self,
         after_sale_id: Optional[str] = None,
         order_id: Optional[str] = None,
+        user_id: Optional[str] = None,
     ) -> Optional[AfterSaleInfo]:
         """按售后单号或订单号查询售后。
 
         【查询策略】
           售后单号最精确 → 优先；没有再用订单号（一笔订单通常只有
           一条售后记录）；两个都查不到 → None。
+
+        【归属校验（安全边界）】
+          传了 user_id 就校验售后单所属订单的用户：查别人的售后一律 None。
         """
         aft = None
         if after_sale_id:
             aft = self.db.get_after_sale(after_sale_id)
         if aft is None and order_id:
             aft = self.db.get_after_sale_by_order(order_id)
-        return self._to_info(aft) if aft else None
+        if aft is None:
+            return None
+        if user_id:
+            order = self.db.get_order(aft.order_id)
+            if order is None or order.user_id != user_id:
+                return None
+        return self._to_info(aft)
 
     @staticmethod
     def _to_info(aft) -> AfterSaleInfo:

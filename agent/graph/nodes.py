@@ -46,12 +46,15 @@ from db.session.store import HandoffContext
 
 
 # ========== 系统提示词 ==========
-# V1 裁定：保持基本形态即可（角色 + 可用工具说明 + 简短作答原则，≤ 数行）。
+# V1 裁定：保持基本形态（角色 + 工具说明 + 简短作答原则，≤ 数行）。
 # 静态字符串：不拼接 user_id / 订单上下文，行为约束靠机制
 # （user_id 注入、order_selection 事件、只读 Tool）而不是 prompt 长清单。
+# 仅保留一行路由提示：真实模型评测发现轻量模型遇到「我的手机坏了」这类
+# 模糊提问时会反问订单号，而不是先查用户的订单列表。
 SYSTEM_PROMPT = """你是电商客服助手。可调用工具查询订单、库存、物流、售后和企业知识库。
 实时业务状态以工具查询结果为准，不要凭历史聊天断言。
-无法可靠处理时调用 handoff_to_human 转人工。
+用户提到自己的订单或商品但未说明订单号时，先查询其订单列表。
+无法可靠处理或用户要求人工时，调用 handoff_to_human 转人工。
 使用简洁中文回答。"""
 
 
@@ -123,7 +126,8 @@ def make_tool_node(tool_map: dict[str, Any], runtime: RuntimeContext):
             tool = tool_map.get(name)
 
             # V1 扩展 1：user_id 系统注入，不依赖模型自觉
-            if name in ("get_user_orders", "get_order"):
+            # 覆盖全部携带订单/身份语义的工具，Service 层再做归属校验兜底
+            if name in ("get_user_orders", "get_order", "get_logistics", "get_after_sale"):
                 args["user_id"] = runtime.user_id
 
             if tool is None:
