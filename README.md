@@ -245,4 +245,5 @@ Multi-Agent、MCP、A2A、复杂 Middleware、自动退款/取消/改地址、�
 | Phase 7 | Human Handoff + HandoffContext | ✅ |
 | 附加 | Mock Console + 前端 | ✅ |
 | Phase 8 | 最小评测闭环（12 case，工具/参数/State 断言） | ✅ |
-| Phase 9 | 流式输出 / 可观测性 / Checkpointer | 进行中 |
+| Phase 9 | SSE 流式输出 + Checkpointer 多轮会话 | ✅ |
+| Phase 10 | LangSmith 可观测性 | 进行中 |

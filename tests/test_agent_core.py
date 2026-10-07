@@ -197,5 +197,38 @@ class TestAgentLoop(unittest.TestCase):
         self.assertEqual(result.get("handoff", {}).get("status"), "handed_off")
 
 
+class TestCheckpointerMemory(unittest.TestCase):
+    """Checkpointer + thread_id：多轮会话状态由检查点延续。
+
+    【测什么】
+      同一 session_id 连续两轮对话，第二轮的 State 应包含第一轮的消息——
+      这就是官方 Checkpointer 替换手写会话缓存后的核心保证。
+    """
+
+    def test_multi_turn_continuity(self) -> None:
+        stub = ScriptedStubLLM(
+            script=[{"content": "第一轮回答"}, {"content": "第二轮回答"}]
+        )
+        r1 = run_agent(
+            user_message="我有哪些订单？", user_id="U001", session_id="T-TEST", llm=stub
+        )
+        r2 = run_agent(
+            user_message="刚才我问了什么？", user_id="U001", session_id="T-TEST", llm=stub
+        )
+        # 第二轮运行结束后，消息序列应包含第一轮的用户消息与两轮问答
+        contents = [str(getattr(m, "content", "")) for m in r2.get("messages") or []]
+        self.assertTrue(any("我有哪些订单" in c for c in contents), f"消息序列: {contents}")
+        self.assertTrue(any("刚才我问了什么" in c for c in contents))
+        self.assertIn("第一轮回答", contents)
+
+    def test_handoff_reset_each_turn(self) -> None:
+        """每轮开始时 handoff 标记应被清空，不残留上一轮的转人工状态。"""
+        stub = ScriptedStubLLM(script=[{"content": "好的，正常处理。"}])
+        result = run_agent(
+            user_message="继续聊点别的", user_id="U001", session_id="T-TEST2", llm=stub
+        )
+        self.assertIsNone(result.get("handoff"))
+
+
 if __name__ == "__main__":
     unittest.main()

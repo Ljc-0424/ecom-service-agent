@@ -47,9 +47,19 @@ from db.session.store import SessionStore
 
 router = APIRouter()
 
-# 进程里的会话缓存：session_id → AgentState 快照
-# V1 单进程内存模型；重启就没了（POST-V1 再考虑持久化）
-_SESSION_STATES: dict[str, dict[str, Any]] = {}
+
+def _ensure_session(user_id: str, session_id: str) -> str:
+    """确保会话存在，返回会话 ID。
+
+    多轮状态的真实来源是 LangGraph Checkpointer（thread_id = 会话 ID）；
+    SessionStore 只登记会话元信息（谁、什么时候建的），供管理接口与后续扩展用。
+    """
+    store = SessionStore.get_default()
+    if not session_id:
+        session_id = f"S{uuid.uuid4().hex[:12]}"  # 随机短 ID
+    if store.get_session(session_id) is None:
+        store.create_session(user_id=user_id, session_id=session_id)
+    return session_id
 
 
 class ChatRequest(BaseModel):
@@ -94,33 +104,8 @@ class ChatResponse(BaseModel):
 
 
 def _get_or_create_session(user_id: str, session_id: str) -> tuple[str, dict[str, Any]]:
-    """拿会话；没有就建一个空 State。
-
-    【流程】
-      1. 已有 session_id 且在缓存 → 直接用
-      2. 否则生成新 id，注册到 SessionStore，并准备空 State
-
-    【返回】
-      (会话ID, 该会话的 State 字典)
-    """
-    store = SessionStore.get_default()
-    if session_id and session_id in _SESSION_STATES:
-        return session_id, _SESSION_STATES[session_id]
-
-    if not session_id:
-        session_id = f"S{uuid.uuid4().hex[:12]}"  # 随机短 ID
-    if store.get_session(session_id) is None:
-        store.create_session(user_id=user_id, session_id=session_id)
-
-    state = {
-        "messages": [],
-        "orders_context": {},
-        "active_order_id": None,
-        "handoff": None,
-        "trace": [],
-    }
-    _SESSION_STATES[session_id] = state
-    return session_id, state
+    """兼容旧调用：确保会话存在并返回 (会话ID, 空State)。"""
+    return _ensure_session(user_id, session_id), {}
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -137,31 +122,27 @@ def chat(req: ChatRequest) -> ChatResponse:
     """
     if not req.user_id:
         raise HTTPException(status_code=400, detail="user_id 不能为空")
-    sid, state = _get_or_create_session(req.user_id, req.session_id)
-    state = dict(state)
-    state["handoff"] = None
-    prev_trace_len = len(state.get("trace") or [])  # 记下旧轨迹长度，方便只返回本轮
+    sid = _ensure_session(req.user_id, req.session_id)
 
     try:
         result = run_agent(
             user_message=req.message,
             user_id=req.user_id,
-            state=state,
+            # 增量输入：每轮清掉上一轮转人工标记，历史状态由 Checkpointer 延续
+            state={"handoff": None},
             session_id=sid,
         )
     except Exception as exc:  # noqa: BLE001
         # 捕获异常并明确报错；V1 不做自动重试
         raise HTTPException(status_code=500, detail=f"Agent 执行失败: {exc}") from exc
 
-    _SESSION_STATES[sid] = result
     _persist_session(sid, req.user_id, result)
 
     final = extract_final_answer(result)
     handoff = extract_handoff(result)
     orders_context = result.get("orders_context") or {}
     active = result.get("active_order_id")
-    all_trace = result.get("trace") or []
-    turn_trace = all_trace[prev_trace_len:]
+    turn_trace = result.get("trace") or []
 
     candidates = []
     need_selection = False
@@ -203,10 +184,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
     """
     if not req.user_id:
         raise HTTPException(status_code=400, detail="user_id 不能为空")
-    sid, state = _get_or_create_session(req.user_id, req.session_id)
-    state = dict(state)
-    state["handoff"] = None
-    prev_trace_len = len(state.get("trace") or [])
+    sid = _ensure_session(req.user_id, req.session_id)
 
     def event_stream() -> Iterator[str]:
         def sse(event: str, payload: dict) -> str:
@@ -217,7 +195,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
             for ev in stream_agent_events(
                 user_message=req.message,
                 user_id=req.user_id,
-                state=state,
+                state={"handoff": None},  # 增量：清掉上一轮转人工标记，历史由检查点延续
                 session_id=sid,
             ):
                 if ev["type"] == "status":
@@ -227,11 +205,9 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
                     yield sse("token", {"delta": ev["delta"]})
                 elif ev["type"] == "final":
                     result = ev["result"]
-                    _SESSION_STATES[sid] = result
                     _persist_session(sid, req.user_id, result)
                     orders_context = result.get("orders_context") or {}
                     active = result.get("active_order_id")
-                    all_trace = result.get("trace") or []
                     # 完成事件携带与同步接口相同的完整字段，前端据此刷新订单面板
                     yield sse("done", {
                         "session_id": sid,
@@ -248,7 +224,7 @@ def chat_stream(req: ChatRequest) -> StreamingResponse:
                             for c in orders_context.values()
                         ],
                         "handoff": result.get("handoff"),
-                        "trace": all_trace[prev_trace_len:],
+                        "trace": result.get("trace") or [],
                     })
         except Exception as exc:  # noqa: BLE001
             yield sse("error", {"detail": f"Agent 执行失败: {exc}"})
@@ -274,22 +250,27 @@ def order_selection(req: OrderSelectionRequest) -> ChatResponse:
     if not req.user_id:
         raise HTTPException(status_code=400, detail="user_id 不能为空")
 
-    sid, state = _get_or_create_session(req.user_id, req.session_id)
+    sid = _ensure_session(req.user_id, req.session_id)
     runtime = RuntimeContext(user_id=req.user_id, session_id=sid)
-    update = apply_order_selection(state, req.order_id, runtime)
+
+    # 当前订单上下文以 SessionStore 里的镜像为准（每轮 _persist_session 后同步）
+    store = SessionStore.get_default()
+    rec = store.get_session(sid)
+    update = apply_order_selection(
+        {"orders_context": (rec.orders_context if rec else None) or {}},
+        req.order_id,
+        runtime,
+    )
     if not update:
         raise HTTPException(status_code=400, detail=f"无效订单 {req.order_id}")
 
-    new_state = {**state, **update}  # 字典合并：旧 State + 更新字段
-    _SESSION_STATES[sid] = new_state
-
+    # 增量输入：订单选择事件的更新合并进检查点状态，再跑一轮让模型知道在谈哪单
     result = run_agent(
         user_message=f"（系统事件）用户已选择订单 {req.order_id}，请围绕该订单继续。",
         user_id=req.user_id,
-        state=new_state,
+        state=update,
         session_id=sid,
     )
-    _SESSION_STATES[sid] = result
     _persist_session(sid, req.user_id, result)
 
     return ChatResponse(
@@ -306,15 +287,15 @@ def order_selection(req: OrderSelectionRequest) -> ChatResponse:
 
 @router.get("/chat/{session_id}/state")
 def get_chat_state(session_id: str) -> dict:
-    """调试用：看某会话当前 active_order_id / orders_context。"""
-    state = _SESSION_STATES.get(session_id)
-    if not state:
+    """调试用：看某会话当前 active_order_id / orders_context（SessionStore 镜像）。"""
+    rec = SessionStore.get_default().get_session(session_id)
+    if not rec:
         raise HTTPException(status_code=404, detail="session not found")
     return {
         "session_id": session_id,
-        "active_order_id": state.get("active_order_id"),
-        "orders_context": state.get("orders_context") or {},
-        "handoff": state.get("handoff"),
+        "active_order_id": rec.active_order_id,
+        "orders_context": rec.orders_context or {},
+        "handoff": rec.handoff,
     }
 
 

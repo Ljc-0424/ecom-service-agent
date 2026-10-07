@@ -31,6 +31,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 
 from agent.graph.nodes import (
@@ -44,10 +45,18 @@ from agent.runtime.context import RuntimeContext
 from agent.state.state import AgentState, OrderContext, empty_state
 from agent.tools.registry import get_tool_map
 
+# 会话检查点（官方 Checkpointer）：同一 thread_id 的多轮状态自动持久化，
+# invoke 时只传增量输入（本轮新消息），LangGraph 会把增量合并到已存状态上。
+# V1 用进程内 InMemorySaver（重启即失）；换 SQLiteSaver/PostgresSaver 只改这一行。
+_CHECKPOINTER = InMemorySaver()
 
-def build_agent_graph(llm: Any, runtime: RuntimeContext):
+
+def build_agent_graph(llm: Any, runtime: RuntimeContext, checkpointer: Any = None):
     """建图并编译（官方 §6 同款装配）。
 
+    【参数】
+      checkpointer —— 传入则开启多轮会话持久化（配合 thread_id 使用）；
+                      不传则无状态运行（单次运行：测试与评测用这条路径）。
     【流程】
       1. get_tool_map() 拿全部业务工具（官方 tools_by_name 惯例）
       2. llm.bind_tools(tools) —— 绑定后模型才知道有哪些工具可调（官方同款）
@@ -78,7 +87,36 @@ def build_agent_graph(llm: Any, runtime: RuntimeContext):
 
     builder.add_edge("tools", "llm")        # 工具做完回 LLM（官方同款循环）
     builder.add_edge("human_handoff", END)  # 转人工则结束（V1 扩展）
-    return builder.compile()
+    return builder.compile(checkpointer=checkpointer)
+
+
+def _build_runtime_parts(
+    user_id: str,
+    session_id: str,
+    llm: Any,
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    """run_agent / stream_agent_events 共用的准备逻辑。
+
+    返回 (graph, input_state, config)：
+      session_id 非空（API 路径）→ 启用 Checkpointer，thread_id = session_id，
+        input_state 只含「本轮增量」（handoff 清零；新消息由调用方追加）；
+      session_id 为空（测试/评测路径）→ 无状态运行，input_state 是完整初始 State。
+    """
+    if not user_id:
+        raise ValueError("user_id 不能为空")  # V1：user_id 必填，不写默认值
+    runtime = RuntimeContext(user_id=user_id, session_id=session_id)
+    llm = llm if llm is not None else create_llm()
+
+    if session_id:
+        graph = build_agent_graph(llm=llm, runtime=runtime, checkpointer=_CHECKPOINTER)
+        config: dict[str, Any] = {
+            "recursion_limit": 25,
+            "configurable": {"thread_id": session_id},
+        }
+        return graph, {"handoff": None}, config  # 每轮清掉上一轮的转人工标记
+
+    graph = build_agent_graph(llm=llm, runtime=runtime)
+    return graph, _prepare_state(None), {"recursion_limit": 25}
 
 
 def run_agent(
@@ -90,26 +128,30 @@ def run_agent(
 ) -> dict[str, Any]:
     """跑一轮 Agent：用户一句话 → 最终 State（含回答/上下文/轨迹）。
 
-    【签名为什么这样】api/chat.py（前端联动）按这个签名调用，保持不变；
-    llm 参数用于测试注入 ScriptedStubLLM，不传则 create_llm() 真模型。
+    【两种模式】
+      session_id 非空（API 路径）→ Checkpointer + thread_id 多轮持久化：
+        state 参数是「增量」（如订单选择事件的更新字段），合并进会话状态，
+        不传则只追加本轮消息——历史状态由检查点自动延续；
+      session_id 为空（测试/评测路径）→ 无状态运行，state 是完整初始 State。
 
-    【官方对照】官方调用方式 agent.invoke({"messages": [HumanMessage(...)]})；
-    本项目 State 带业务字段，所以传入完整 State 字典，messages 里追加本轮用户消息。
+    【官方对照】Checkpointer 官方用法：
+        graph.invoke(input, config={"configurable": {"thread_id": "1"}})
+      增量输入与检查点状态合并（messages 走 add_messages 追加）。
     """
-    if not user_id:
-        raise ValueError("user_id 不能为空")  # V1：user_id 必填，不写默认值
-    runtime = RuntimeContext(user_id=user_id, session_id=session_id)
-    llm = llm if llm is not None else create_llm()
-    graph = build_agent_graph(llm=llm, runtime=runtime)
+    graph, input_state, config = _build_runtime_parts(user_id, session_id, llm)
 
-    state = _prepare_state(state)
+    if state:
+        # 合并调用方给的增量字段（orders_context / active_order_id / handoff 等）
+        for key, value in state.items():
+            input_state[key] = value
+
     # 本轮用户消息追加进 messages（官方同款：传 HumanMessage 进 graph）
-    state["messages"] = list(state.get("messages") or []) + [
+    input_state["messages"] = list(input_state.get("messages") or []) + [
         HumanMessage(content=user_message)
     ]
 
     # invoke：执行整张图直到 END；recursion_limit 防模型反复调工具死循环
-    return graph.invoke(state, config={"recursion_limit": 25})
+    return graph.invoke(input_state, config=config)
 
 
 def _prepare_state(state: Optional[AgentState]) -> AgentState:
@@ -150,18 +192,26 @@ def stream_agent_events(
         raise ValueError("user_id 不能为空")
     runtime = RuntimeContext(user_id=user_id, session_id=session_id)
     llm = llm if llm is not None else create_llm()
-    graph = build_agent_graph(llm=llm, runtime=runtime)
+    graph, input_state, config = _build_runtime_parts(user_id, session_id, llm)
 
-    state = _prepare_state(state)
-    state["messages"] = list(state.get("messages") or []) + [
+    if state:
+        for key, value in state.items():
+            input_state[key] = value
+
+    # 有 Checkpointer 时，先读出检查点里的已有状态作为累计底座
+    # （无状态路径的底座就是完整输入本身）
+    final: dict[str, Any] = dict(input_state)
+    if config.get("configurable"):
+        snapshot = graph.get_state(config)
+        base = dict(snapshot.values or {})
+        for key in ("orders_context", "active_order_id", "handoff", "messages", "trace"):
+            if key in base and key not in input_state:
+                final[key] = base[key]
+    final["messages"] = list(final.get("messages") or []) + [
         HumanMessage(content=user_message)
     ]
-
-    # 自己累计最终 State：updates 里的字段做「最后写入胜出」，
-    # messages 按 add_messages 的语义追加（V1 只追加、无按 id 去重的场景）
-    final = dict(state)
     for mode, chunk in graph.stream(
-        state, config={"recursion_limit": 25}, stream_mode=["updates", "messages"]
+        input_state, config=config, stream_mode=["updates", "messages"]
     ):
         if mode == "updates":
             for node_name, update in (chunk or {}).items():
