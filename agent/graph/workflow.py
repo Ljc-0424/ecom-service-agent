@@ -102,17 +102,7 @@ def run_agent(
     llm = llm if llm is not None else create_llm()
     graph = build_agent_graph(llm=llm, runtime=runtime)
 
-    if state is None:
-        state = empty_state()
-    else:
-        # 复制一份，避免直接改调用方的字典；缺字段补默认
-        state = dict(state)
-        state.setdefault("messages", [])
-        state.setdefault("orders_context", {})
-        state.setdefault("active_order_id", None)
-        state.setdefault("handoff", None)
-        state.setdefault("trace", [])
-
+    state = _prepare_state(state)
     # 本轮用户消息追加进 messages（官方同款：传 HumanMessage 进 graph）
     state["messages"] = list(state.get("messages") or []) + [
         HumanMessage(content=user_message)
@@ -120,6 +110,84 @@ def run_agent(
 
     # invoke：执行整张图直到 END；recursion_limit 防模型反复调工具死循环
     return graph.invoke(state, config={"recursion_limit": 25})
+
+
+def _prepare_state(state: Optional[AgentState]) -> AgentState:
+    """准备初始 State：空工作台或复制补齐字段（invoke 与流式两条路共用）。"""
+    if state is None:
+        return empty_state()
+    new_state = dict(state)  # 复制一份，避免直接改调用方的字典
+    new_state.setdefault("messages", [])
+    new_state.setdefault("orders_context", {})
+    new_state.setdefault("active_order_id", None)
+    new_state.setdefault("handoff", None)
+    new_state.setdefault("trace", [])
+    return new_state
+
+
+def stream_agent_events(
+    user_message: str,
+    user_id: str,
+    state: Optional[AgentState] = None,
+    llm: Any = None,
+    session_id: str = "",
+):
+    """流式版 run_agent：边跑边产出事件，不直接返回最终 State。
+
+    【产出的事件（dict）】
+      {"type": "status", "stage": "tools", "tools": ["get_logistics"]}
+        —— 工具节点开始执行时通知（前端显示「正在查询物流…」）
+      {"type": "token", "delta": "您"}
+        —— 模型最终回答的一个字/词（前端逐字渲染）
+      {"type": "final", "result": <完整 State>}
+        —— 流结束后的最终 State（调用方据此更新会话缓存与响应字段）
+
+    【官方对照】LangGraph Streaming：
+      graph.stream(input, config, stream_mode=["updates", "messages"])
+      updates 模式 → 每个节点跑完拿到增量；messages 模式 → LLM 输出的逐 token 块。
+    """
+    if not user_id:
+        raise ValueError("user_id 不能为空")
+    runtime = RuntimeContext(user_id=user_id, session_id=session_id)
+    llm = llm if llm is not None else create_llm()
+    graph = build_agent_graph(llm=llm, runtime=runtime)
+
+    state = _prepare_state(state)
+    state["messages"] = list(state.get("messages") or []) + [
+        HumanMessage(content=user_message)
+    ]
+
+    # 自己累计最终 State：updates 里的字段做「最后写入胜出」，
+    # messages 按 add_messages 的语义追加（V1 只追加、无按 id 去重的场景）
+    final = dict(state)
+    for mode, chunk in graph.stream(
+        state, config={"recursion_limit": 25}, stream_mode=["updates", "messages"]
+    ):
+        if mode == "updates":
+            for node_name, update in (chunk or {}).items():
+                if not isinstance(update, dict):
+                    continue
+                # 状态字段：最后写入胜出；messages/trace：追加
+                for key in ("orders_context", "active_order_id", "handoff"):
+                    if key in update:
+                        final[key] = update[key]
+                if "messages" in update:
+                    final["messages"] = list(final.get("messages") or []) + list(update["messages"])
+                if "trace" in update:
+                    final["trace"] = list(final.get("trace") or []) + list(update["trace"])
+                # 工具节点跑完 → 通知前端本轮执行了哪些工具
+                if node_name == "tools":
+                    names = [t.get("name") for t in (update.get("trace") or []) if t.get("type") == "tool"]
+                    if names:
+                        yield {"type": "status", "stage": "tools", "tools": names}
+        elif mode == "messages":
+            msg = chunk[0] if isinstance(chunk, tuple) else chunk
+            # 只要模型输出的文字增量；工具消息/带 tool_calls 的空块跳过
+            if getattr(msg, "type", "") == "AIMessageChunk":
+                delta = getattr(msg, "content", "")
+                if isinstance(delta, str) and delta:
+                    yield {"type": "token", "delta": delta}
+    yield {"type": "final", "result": final}
 
 
 def apply_order_selection(

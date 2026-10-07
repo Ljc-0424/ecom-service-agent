@@ -27,10 +27,12 @@
 
 from __future__ import annotations
 
+import json
 import uuid
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent.graph.workflow import (
@@ -38,6 +40,7 @@ from agent.graph.workflow import (
     extract_final_answer,
     extract_handoff,
     run_agent,
+    stream_agent_events,
 )
 from agent.runtime.context import RuntimeContext
 from db.session.store import SessionStore
@@ -182,6 +185,78 @@ def chat(req: ChatRequest) -> ChatResponse:
         candidate_orders=candidates,
         handoff=handoff,
         trace=turn_trace,
+    )
+
+
+@router.post("/chat/stream", response_class=StreamingResponse)
+def chat_stream(req: ChatRequest) -> StreamingResponse:
+    """流式对话接口（SSE）：回答逐字推送，工具调用实时播报。
+
+    【事件格式（Server-Sent Events）】
+      event: status  data: {"stage": "tools", "tools": ["get_logistics"]}
+        —— Agent 正在执行的工具（前端显示「正在查询物流…」）
+      event: token   data: {"delta": "您"}
+        —— 最终回答的一个字/词（前端逐字渲染）
+      event: done    data: {与 ChatResponse 相同的字段}
+        —— 流结束，附带会话 ID、订单上下文、候选订单等完整响应
+      event: error   data: {"detail": "..."}
+    """
+    if not req.user_id:
+        raise HTTPException(status_code=400, detail="user_id 不能为空")
+    sid, state = _get_or_create_session(req.user_id, req.session_id)
+    state = dict(state)
+    state["handoff"] = None
+    prev_trace_len = len(state.get("trace") or [])
+
+    def event_stream() -> Iterator[str]:
+        def sse(event: str, payload: dict) -> str:
+            return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        reply_parts: list[str] = []
+        try:
+            for ev in stream_agent_events(
+                user_message=req.message,
+                user_id=req.user_id,
+                state=state,
+                session_id=sid,
+            ):
+                if ev["type"] == "status":
+                    yield sse("status", {"stage": ev["stage"], "tools": ev["tools"]})
+                elif ev["type"] == "token":
+                    reply_parts.append(ev["delta"])
+                    yield sse("token", {"delta": ev["delta"]})
+                elif ev["type"] == "final":
+                    result = ev["result"]
+                    _SESSION_STATES[sid] = result
+                    _persist_session(sid, req.user_id, result)
+                    orders_context = result.get("orders_context") or {}
+                    active = result.get("active_order_id")
+                    all_trace = result.get("trace") or []
+                    # 完成事件携带与同步接口相同的完整字段，前端据此刷新订单面板
+                    yield sse("done", {
+                        "session_id": sid,
+                        "reply": "".join(reply_parts),
+                        "active_order_id": active,
+                        "orders_context": orders_context,
+                        "need_order_selection": (not active) and len(orders_context) > 1,
+                        "candidate_orders": [
+                            {
+                                "order_id": c.get("order_id"),
+                                "product_name": c.get("product_name"),
+                                "order_status": c.get("order_status"),
+                            }
+                            for c in orders_context.values()
+                        ],
+                        "handoff": result.get("handoff"),
+                        "trace": all_trace[prev_trace_len:],
+                    })
+        except Exception as exc:  # noqa: BLE001
+            yield sse("error", {"detail": f"Agent 执行失败: {exc}"})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 

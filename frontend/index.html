@@ -572,30 +572,73 @@ createApp({
       messages.value.push({ role: 'user', content: text });
       draft.value = '';
       loading.value = true;
+      // 流式：先放一个空的 agent 气泡，后续 token 往里追加
+      const bubble = { role: 'agent', content: '' };
+      messages.value.push(bubble);
       scrollChat();
       try {
-        const data = await api('/api/chat', {
+        const resp = await fetch('/api/chat/stream', {
           method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             message: text,
             session_id: sessionId.value,
             user_id: userId,
           }),
         });
-        sessionId.value = data.session_id;
-        messages.value.push({ role: 'agent', content: data.reply });
-        if (data.need_order_selection) {
-          needOrderSelection.value = true;
-          candidateOrders.value = data.candidate_orders || [];
+        if (!resp.ok || !resp.body) {
+          const err = await resp.json().catch(() => ({}));
+          throw new Error(err.detail || ('HTTP ' + resp.status));
         }
-        if (data.handoff) {
-          messages.value.push({
-            role: 'system',
-            content: `[人工接管] ${data.handoff.reason || data.handoff.message || ''}`,
-          });
+        // 解析 SSE：按空行分段，每段含 event: 与 data: 两行
+        const reader = resp.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let idx;
+          while ((idx = buffer.indexOf('\n\n')) >= 0) {
+            const block = buffer.slice(0, idx);
+            buffer = buffer.slice(idx + 2);
+            let event = 'message';
+            let data = '';
+            for (const line of block.split('\n')) {
+              if (line.startsWith('event:')) event = line.slice(6).trim();
+              else if (line.startsWith('data:')) data += line.slice(5).trim();
+            }
+            if (!data) continue;
+            const payload = JSON.parse(data);
+            if (event === 'status') {
+              // 工具执行中：在气泡上方给一条系统提示
+              const names = (payload.tools || []).join('、');
+              messages.value.push({ role: 'system', content: `[调用工具] ${names}` });
+              scrollChat();
+            } else if (event === 'token') {
+              bubble.content += payload.delta; // 逐字追加，Vue 自动更新气泡
+              scrollChat();
+            } else if (event === 'done') {
+              sessionId.value = payload.session_id;
+              bubble.content = payload.reply; // 以 done 里的完整回答为准
+              if (payload.handoff) {
+                messages.value.push({
+                  role: 'system',
+                  content: `[人工接管] ${payload.handoff.reason || ''}`,
+                });
+              }
+              if (payload.need_order_selection) {
+                needOrderSelection.value = true;
+                candidateOrders.value = payload.candidate_orders || [];
+              }
+              await loadOrders();
+            } else if (event === 'error') {
+              throw new Error(payload.detail || '流式请求失败');
+            }
+          }
         }
-        await loadOrders();
       } catch (e) {
+        if (!bubble.content) bubble.content = '（无回答）';
         messages.value.push({ role: 'system', content: '请求失败：' + e.message });
       } finally {
         loading.value = false;
