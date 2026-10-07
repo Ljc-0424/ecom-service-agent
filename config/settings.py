@@ -64,6 +64,13 @@ class Settings(BaseSettings):
     # 企业知识库目录：里面放 Markdown 文档，启动时从这里建检索索引（RAG 的知识来源）
     knowledge_dir: str = Field(default="./knowledge", alias="KNOWLEDGE_DIR")
 
+    # ---- Embedding（企业知识检索向量化）----
+    # 配置后知识检索使用 Embedding 模型（OpenAI 兼容 /embeddings 接口）；
+    # 不配置则回落词频向量（离线可用）。推荐硅基流动 BAAI/bge-m3（免费、中文优化）
+    embedding_api_key: str = Field(default="", alias="EMBEDDING_API_KEY")
+    embedding_base_url: str = Field(default="https://api.siliconflow.cn/v1", alias="EMBEDDING_BASE_URL")
+    embedding_model: str = Field(default="BAAI/bge-m3", alias="EMBEDDING_MODEL")
+
     # ---- 服务（被 run_server.py 启动时使用）----
     # 监听地址：0.0.0.0 表示本机所有网卡都能访问（本机 + 局域网）
     api_host: str = Field(default="0.0.0.0", alias="API_HOST")
