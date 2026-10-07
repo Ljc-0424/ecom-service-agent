@@ -1,0 +1,772 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>电商客服 Agent Demo</title>
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <style>
+    :root {
+      --bg: #f4f6f9;
+      --panel: #ffffff;
+      --ink: #1f2937;
+      --muted: #6b7280;
+      --accent: #2563eb;
+      --accent-soft: #dbeafe;
+      --danger: #dc2626;
+      --warn: #d97706;
+      --ok: #059669;
+      --border: #e5e7eb;
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "PingFang SC", "Microsoft YaHei", sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+    }
+    .app-header {
+      background: #0f172a;
+      color: #fff;
+      padding: 14px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .app-header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+    .badge {
+      background: var(--accent);
+      color: #fff;
+      border-radius: 999px;
+      padding: 2px 10px;
+      font-size: 12px;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 1.1fr 1.15fr;
+      gap: 14px;
+      padding: 14px;
+      max-width: 1360px;
+      margin: 0 auto;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .panel-title {
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .panel-body { padding: 14px; }
+    .chat-area {
+      height: 420px;
+      overflow-y: auto;
+      padding: 14px;
+      background: #fafafa;
+    }
+    .msg { margin-bottom: 12px; display: flex; }
+    .msg.user { justify-content: flex-end; }
+    .bubble {
+      max-width: 78%;
+      padding: 10px 14px;
+      border-radius: 12px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      font-size: 14px;
+    }
+    .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+    .msg.agent .bubble { background: #fff; border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+    .msg.system .bubble { background: #fff7ed; border: 1px solid #fdba74; color: #9a3412; }
+    .chat-input {
+      display: flex;
+      gap: 8px;
+      padding: 12px;
+      border-top: 1px solid var(--border);
+    }
+    .chat-input textarea {
+      flex: 1;
+      resize: none;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      font-size: 14px;
+      min-height: 44px;
+      font-family: inherit;
+    }
+    button {
+      border: none;
+      border-radius: 8px;
+      padding: 8px 14px;
+      cursor: pointer;
+      font-size: 13px;
+      font-family: inherit;
+    }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+    .btn-ghost { background: #f3f4f6; color: var(--ink); }
+    .btn-danger { background: #fee2e2; color: var(--danger); }
+    .btn-small { padding: 4px 10px; font-size: 12px; }
+    .order-card {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 10px;
+      cursor: pointer;
+    }
+    .order-card:hover { border-color: var(--accent); }
+    .order-card.active {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-soft);
+    }
+    .order-card h4 { margin: 0 0 6px; font-size: 14px; }
+    .meta { color: var(--muted); font-size: 12px; line-height: 1.6; }
+    .tag {
+      display: inline-block;
+      padding: 1px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      margin-right: 4px;
+    }
+    .tag-blue { background: var(--accent-soft); color: var(--accent); }
+    .tag-green { background: #d1fae5; color: var(--ok); }
+    .tag-orange { background: #ffedd5; color: var(--warn); }
+    .tag-red { background: #fee2e2; color: var(--danger); }
+    .console-section {
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .console-section h3 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      color: var(--accent);
+    }
+    .console-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .field { display: flex; flex-direction: column; gap: 4px; }
+    .field label { font-size: 12px; color: var(--muted); }
+    .field select, .field input, .field textarea {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      font-size: 13px;
+      font-family: inherit;
+    }
+    .console-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .order-select-btns {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 8px;
+    }
+    .hint {
+      background: var(--accent-soft);
+      color: #1e3a8a;
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-size: 12px;
+      margin: 10px 14px;
+    }
+    .right-col { display: flex; flex-direction: column; gap: 14px; }
+    .empty { color: var(--muted); font-size: 13px; text-align: center; padding: 16px; }
+    .full-row { grid-column: 1 / -1; }
+    .scroll-col {
+      max-height: 780px;
+      overflow-y: auto;
+    }
+  </style>
+</head>
+<body>
+<div id="app">
+  <header class="app-header">
+    <h1>电商客服 Agent · 业务数据模拟系统</h1>
+    <div>
+      <span class="badge">当前用户：{{ userId }}</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <!-- 左：聊天 -->
+    <section class="panel">
+      <div class="panel-title">
+        <span>客服聊天窗口</span>
+        <button class="btn-ghost btn-small" @click="newSession">新会话</button>
+      </div>
+
+      <div v-if="needOrderSelection" class="hint">
+        检测到多个候选订单，请选择要咨询的订单：
+        <div class="order-select-btns">
+          <button
+            v-for="c in candidateOrders"
+            :key="c.order_id"
+            class="btn-primary btn-small"
+            @click="selectOrder(c.order_id)"
+          >
+            {{ c.product_name }}（{{ c.order_id }}）
+          </button>
+        </div>
+      </div>
+
+      <div class="chat-area" ref="chatArea">
+        <div v-if="messages.length === 0" class="empty">
+          你好，我是电商智能客服。可以问我：<br/>
+          「我的订单现在什么状态？」「我的快递到哪里了？」「这个商品可以退吗？」
+        </div>
+        <div v-for="(m, i) in messages" :key="i" class="msg" :class="m.role">
+          <div class="bubble">{{ m.content }}</div>
+        </div>
+      </div>
+
+      <div class="chat-input">
+        <textarea
+          v-model="draft"
+          placeholder="输入消息，Enter 发送"
+          @keydown.enter.exact.prevent="sendChat"
+        ></textarea>
+        <button class="btn-primary" :disabled="loading || !draft.trim()" @click="sendChat">
+          {{ loading ? '思考中…' : '发送' }}
+        </button>
+      </div>
+    </section>
+
+    <!-- 右：订单 + 业务模拟控制台 -->
+    <div class="right-col scroll-col">
+      <section class="panel">
+        <div class="panel-title">
+          <span>当前用户订单</span>
+          <button class="btn-ghost btn-small" @click="loadOrders">刷新</button>
+        </div>
+        <div class="panel-body">
+          <div v-if="orders.length === 0" class="empty">暂无订单，请在下方「下单」</div>
+          <div
+            v-for="o in orders"
+            :key="o.order_id"
+            class="order-card"
+            :class="{ active: activeOrderId === o.order_id }"
+            @click="selectOrder(o.order_id)"
+          >
+            <h4>{{ o.order_id }} · {{ o.product_name }} × {{ o.quantity || 1 }}</h4>
+            <div class="meta">
+              <div>规格：{{ o.specification || '—' }} · 金额：¥{{ o.amount }}</div>
+              <div>
+                <span class="tag tag-blue">订单：{{ o.order_status }}</span>
+                <span class="tag" :class="o.has_logistics ? 'tag-green' : 'tag-orange'">
+                  物流：{{ o.has_logistics ? '有' : '暂无' }}
+                </span>
+                <span v-if="o.has_after_sale" class="tag tag-orange">售后中</span>
+              </div>
+              <div>创建：{{ o.created_at }}</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <span>模拟业务控制台</span>
+          <span class="meta">写入 Business DB，Agent 下次查询可见</span>
+        </div>
+        <div class="panel-body">
+
+          <!-- 1. 下单 -->
+          <div class="console-section">
+            <h3>1. 下单（商品 / 数量 / 收货地址）</h3>
+            <div class="console-grid">
+              <div class="field">
+                <label>选择商品</label>
+                <select v-model="orderForm.productId">
+                  <option disabled value="">请选择商品</option>
+                  <option v-for="p in products" :key="p.product_id" :value="p.product_id">
+                    {{ p.product_name }} · ¥{{ p.price }} · 库存{{ p.available_stock }}
+                  </option>
+                </select>
+              </div>
+              <div class="field">
+                <label>数量</label>
+                <input type="number" min="1" v-model.number="orderForm.quantity" />
+              </div>
+              <div class="field full-row">
+                <label>收货地址</label>
+                <input v-model="orderForm.address" placeholder="省市区 + 详细地址" />
+              </div>
+              <div class="field full-row">
+                <label>承诺发货时间（可空，默认 +3 天）</label>
+                <input v-model="orderForm.promisedShipTime" placeholder="2026-10-05 18:00:00" />
+              </div>
+            </div>
+            <div class="console-actions">
+              <button class="btn-primary" @click="createOrder" :disabled="!orderForm.productId">
+                提交下单
+              </button>
+            </div>
+          </div>
+
+          <!-- 2. 修改订单 -->
+          <div class="console-section">
+            <h3>2. 修改订单（状态 / 地址 / 承诺发货时间）</h3>
+            <div class="console-grid">
+              <div class="field">
+                <label>目标订单</label>
+                <select v-model="orderEdit.orderId">
+                  <option disabled value="">请选择订单</option>
+                  <option v-for="o in orders" :key="o.order_id" :value="o.order_id">
+                    {{ o.order_id }} · {{ o.product_name }}
+                  </option>
+                </select>
+              </div>
+              <div class="field">
+                <label>订单状态</label>
+                <select v-model="orderEdit.orderStatus">
+                  <option>待支付</option>
+                  <option>待发货</option>
+                  <option>已发货</option>
+                  <option>已签收</option>
+                  <option>已取消</option>
+                  <option>退款中</option>
+                  <option>已退款</option>
+                </select>
+              </div>
+              <div class="field full-row">
+                <label>收货地址</label>
+                <input v-model="orderEdit.address" placeholder="修改收货地址" />
+              </div>
+              <div class="field">
+                <label>承诺发货时间</label>
+                <input v-model="orderEdit.promisedShipTime" />
+              </div>
+              <div class="field">
+                <label>取消原因（取消时填写）</label>
+                <input v-model="orderEdit.cancelReason" placeholder="可空" />
+              </div>
+            </div>
+            <div class="console-actions">
+              <button class="btn-primary" @click="updateOrder" :disabled="!orderEdit.orderId">
+                保存订单修改
+              </button>
+            </div>
+          </div>
+
+          <!-- 3. 修改物流 -->
+          <div class="console-section">
+            <h3>3. 修改物流（状态 / 当前位置 / 是否异常）</h3>
+            <div class="console-grid">
+              <div class="field">
+                <label>目标订单</label>
+                <select v-model="logiForm.orderId">
+                  <option disabled value="">请选择订单</option>
+                  <option v-for="o in orders" :key="o.order_id" :value="o.order_id">
+                    {{ o.order_id }} · {{ o.product_name }}
+                  </option>
+                </select>
+              </div>
+              <div class="field">
+                <label>物流状态</label>
+                <select v-model="logiForm.logisticsStatus">
+                  <option>未发货</option>
+                  <option>运输中</option>
+                  <option>派送中</option>
+                  <option>已签收</option>
+                  <option>运输异常</option>
+                  <option>退回</option>
+                </select>
+              </div>
+              <div class="field full-row">
+                <label>当前物流位置 / 配送到的节点</label>
+                <input v-model="logiForm.currentLocation" placeholder="如：杭州转运中心" />
+              </div>
+              <div class="field">
+                <label>预计送达</label>
+                <input v-model="logiForm.estimatedTime" placeholder="2026-10-02 20:00:00" />
+              </div>
+              <div class="field">
+                <label>是否物流异常</label>
+                <select v-model="logiForm.isException">
+                  <option :value="false">否</option>
+                  <option :value="true">是</option>
+                </select>
+              </div>
+              <div class="field full-row">
+                <label>异常原因（异常时填写）</label>
+                <input v-model="logiForm.exceptionReason" placeholder="如：包裹扫描异常" />
+              </div>
+            </div>
+            <div class="console-actions">
+              <button class="btn-primary" @click="updateLogistics" :disabled="!logiForm.orderId">
+                保存物流修改
+              </button>
+            </div>
+          </div>
+
+          <!-- 4. 售后 -->
+          <div class="console-section">
+            <h3>4. 售后 / 退款 / 退换货</h3>
+            <div class="console-grid">
+              <div class="field">
+                <label>目标订单</label>
+                <select v-model="aftForm.orderId">
+                  <option disabled value="">请选择订单</option>
+                  <option v-for="o in orders" :key="o.order_id" :value="o.order_id">
+                    {{ o.order_id }} · {{ o.product_name }}
+                  </option>
+                </select>
+              </div>
+              <div class="field">
+                <label>售后类型</label>
+                <select v-model="aftForm.afterSaleType">
+                  <option>退款</option>
+                  <option>退货</option>
+                  <option>换货</option>
+                  <option>维修</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>售后状态</label>
+                <select v-model="aftForm.afterSaleStatus">
+                  <option>待处理</option>
+                  <option>处理中</option>
+                  <option>已完成</option>
+                  <option>已拒绝</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>退款状态</label>
+                <select v-model="aftForm.refundStatus">
+                  <option>无</option>
+                  <option>退款处理中</option>
+                  <option>退款成功</option>
+                  <option>退款失败</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>退款金额（0=订单金额）</label>
+                <input type="number" min="0" v-model.number="aftForm.refundAmount" />
+              </div>
+              <div class="field">
+                <label>原因</label>
+                <input v-model="aftForm.reason" placeholder="如：不符合预期" />
+              </div>
+            </div>
+            <div class="console-actions">
+              <button class="btn-primary" @click="createAfterSale" :disabled="!aftForm.orderId">
+                创建/更新售后
+              </button>
+            </div>
+          </div>
+
+          <div class="console-actions">
+            <button class="btn-danger" @click="resetData">重置为种子数据</button>
+          </div>
+
+          <div class="meta" style="margin-top:8px">
+            数据链路：控制台 → Mock API → Service → SQLite。<br/>
+            Agent 通过 Tool → Service → 同一数据库查询，改完再问即可验证实时性。
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, reactive, onMounted, nextTick } = Vue;
+
+createApp({
+  setup() {
+    const userId = 'U001';
+    const sessionId = ref('');
+    const draft = ref('');
+    const loading = ref(false);
+    const messages = ref([]);
+    const orders = ref([]);
+    const products = ref([]);
+    const activeOrderId = ref('');
+    const needOrderSelection = ref(false);
+    const candidateOrders = ref([]);
+    const chatArea = ref(null);
+
+    const orderForm = reactive({
+      productId: '',
+      quantity: 1,
+      address: '',
+      promisedShipTime: '',
+    });
+    const orderEdit = reactive({
+      orderId: '',
+      orderStatus: '待发货',
+      address: '',
+      promisedShipTime: '',
+      cancelReason: '',
+    });
+    const logiForm = reactive({
+      orderId: '',
+      logisticsStatus: '运输中',
+      currentLocation: '',
+      estimatedTime: '',
+      isException: false,
+      exceptionReason: '',
+    });
+    const aftForm = reactive({
+      orderId: '',
+      afterSaleType: '退款',
+      afterSaleStatus: '处理中',
+      refundStatus: '退款处理中',
+      refundAmount: 0,
+      reason: '',
+    });
+
+    async function api(path, options = {}) {
+      const res = await fetch(path, {
+        headers: { 'Content-Type': 'application/json' },
+        ...options,
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(text || res.statusText);
+      }
+      return res.json();
+    }
+
+    function scrollChat() {
+      nextTick(() => {
+        if (chatArea.value) chatArea.value.scrollTop = chatArea.value.scrollHeight;
+      });
+    }
+
+    function pushSystem(text) {
+      messages.value.push({ role: 'system', content: text });
+      scrollChat();
+    }
+
+    async function loadOrders() {
+      const data = await api(`/api/orders?user_id=${userId}`);
+      orders.value = data.orders || [];
+    }
+
+    async function loadProducts() {
+      const data = await api('/api/mock/products');
+      products.value = data.products || [];
+    }
+
+    async function sendChat() {
+      const text = draft.value.trim();
+      if (!text || loading.value) return;
+      messages.value.push({ role: 'user', content: text });
+      draft.value = '';
+      loading.value = true;
+      scrollChat();
+      try {
+        const data = await api('/api/chat', {
+          method: 'POST',
+          body: JSON.stringify({
+            message: text,
+            session_id: sessionId.value,
+            user_id: userId,
+          }),
+        });
+        sessionId.value = data.session_id;
+        messages.value.push({ role: 'agent', content: data.reply });
+        if (data.need_order_selection) {
+          needOrderSelection.value = true;
+          candidateOrders.value = data.candidate_orders || [];
+        }
+        if (data.handoff) {
+          messages.value.push({
+            role: 'system',
+            content: `[人工接管] ${data.handoff.reason || data.handoff.message || ''}`,
+          });
+        }
+        await loadOrders();
+      } catch (e) {
+        messages.value.push({ role: 'system', content: '请求失败：' + e.message });
+      } finally {
+        loading.value = false;
+        scrollChat();
+      }
+    }
+
+    async function selectOrder(orderId) {
+      activeOrderId.value = orderId;
+      orderEdit.orderId = orderId;
+      logiForm.orderId = orderId;
+      aftForm.orderId = orderId;
+      if (needOrderSelection.value) {
+        loading.value = true;
+        try {
+          const data = await api('/api/order-selection', {
+            method: 'POST',
+            body: JSON.stringify({
+              type: 'order_selection',
+              order_id: orderId,
+              session_id: sessionId.value,
+              user_id: userId,
+            }),
+          });
+          messages.value.push({ role: 'user', content: `[选择订单] ${orderId}` });
+          messages.value.push({ role: 'agent', content: data.reply });
+          needOrderSelection.value = false;
+          candidateOrders.value = [];
+          sessionId.value = data.session_id;
+        } catch (e) {
+          messages.value.push({ role: 'system', content: '订单选择失败：' + e.message });
+        } finally {
+          loading.value = false;
+          scrollChat();
+        }
+      }
+    }
+
+    async function createOrder() {
+      if (!orderForm.productId) return alert('请选择商品');
+      try {
+        const data = await api('/api/mock/orders', {
+          method: 'POST',
+          body: JSON.stringify({
+            user_id: userId,
+            product_id: orderForm.productId,
+            quantity: orderForm.quantity || 1,
+            address: orderForm.address || '',
+            promised_ship_time: orderForm.promisedShipTime || '',
+            order_status: '待发货',
+            payment_status: '已支付',
+          }),
+        });
+        pushSystem(`[Mock] 下单成功 ${data.order_id}，状态=待发货，已创建物流占位`);
+        await loadOrders();
+      } catch (e) {
+        pushSystem('下单失败：' + e.message);
+      }
+    }
+
+    async function updateOrder() {
+      if (!orderEdit.orderId) return alert('请选择订单');
+      try {
+        await api(`/api/mock/orders/${orderEdit.orderId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({
+            order_status: orderEdit.orderStatus,
+            address: orderEdit.address || null,
+            promised_ship_time: orderEdit.promisedShipTime || null,
+            cancel_reason: orderEdit.cancelReason || null,
+          }),
+        });
+        pushSystem(`[Mock] 订单 ${orderEdit.orderId} 已更新（${orderEdit.orderStatus}）`);
+        await loadOrders();
+      } catch (e) {
+        pushSystem('修改订单失败：' + e.message);
+      }
+    }
+
+    async function updateLogistics() {
+      if (!logiForm.orderId) return alert('请选择订单');
+      try {
+        await api(`/api/mock/logistics/${logiForm.orderId}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            logistics_status: logiForm.logisticsStatus,
+            current_location: logiForm.currentLocation,
+            estimated_time: logiForm.estimatedTime,
+            is_exception: logiForm.isException,
+            exception_reason: logiForm.exceptionReason,
+          }),
+        });
+        pushSystem(`[Mock] 订单 ${logiForm.orderId} 物流 → ${logiForm.logisticsStatus} @ ${logiForm.currentLocation || '—'}`);
+        await loadOrders();
+      } catch (e) {
+        pushSystem('修改物流失败：' + e.message);
+      }
+    }
+
+    async function createAfterSale() {
+      if (!aftForm.orderId) return alert('请选择订单');
+      try {
+        const data = await api('/api/mock/after-sales', {
+          method: 'POST',
+          body: JSON.stringify({
+            order_id: aftForm.orderId,
+            after_sale_type: aftForm.afterSaleType,
+            after_sale_status: aftForm.afterSaleStatus,
+            refund_status: aftForm.refundStatus,
+            refund_amount: aftForm.refundAmount || 0,
+            reason: aftForm.reason,
+          }),
+        });
+        pushSystem(`[Mock] 售后已创建 ${data.after_sale && data.after_sale.after_sale_id}（${aftForm.afterSaleType}/${aftForm.refundStatus}）`);
+        await loadOrders();
+      } catch (e) {
+        pushSystem('创建售后失败：' + e.message);
+      }
+    }
+
+    async function resetData() {
+      if (!confirm('确定重置为种子数据？当前 Mock 修改会丢失。')) return;
+      await api('/api/mock/reset', { method: 'POST' });
+      pushSystem('[Mock] 已重置为种子数据');
+      await loadOrders();
+      await loadProducts();
+    }
+
+    function newSession() {
+      sessionId.value = '';
+      messages.value = [];
+      needOrderSelection.value = false;
+      candidateOrders.value = [];
+    }
+
+    onMounted(async () => {
+      try {
+        await loadOrders();
+        await loadProducts();
+      } catch (e) {
+        console.error(e);
+      }
+    });
+
+    return {
+      userId,
+      draft,
+      loading,
+      messages,
+      orders,
+      products,
+      activeOrderId,
+      needOrderSelection,
+      candidateOrders,
+      chatArea,
+      orderForm,
+      orderEdit,
+      logiForm,
+      aftForm,
+      sendChat,
+      selectOrder,
+      loadOrders,
+      createOrder,
+      updateOrder,
+      updateLogistics,
+      createAfterSale,
+      resetData,
+      newSession,
+    };
+  },
+}).mount('#app');
+</script>
+</body>
+</html>

@@ -1,0 +1,24 @@
+[project]
+name = "ecom-service-agent"
+version = "0.1.0"
+description = "电商智能客服 Agent 第一版：Agent Core + 模拟业务系统 + 评测预留"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "langgraph>=0.2",
+    "langchain-core>=0.3",
+    "langchain-openai>=0.2",
+    "httpx>=0.26",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

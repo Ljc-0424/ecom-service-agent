@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# 运行时产物（服务启动时自动重建：种子数据 / 向量索引）
+data/
+
+# 密钥与本地配置（绝不入库）
+.env
+
+# 编辑器
+.idea/
+.vscode/
