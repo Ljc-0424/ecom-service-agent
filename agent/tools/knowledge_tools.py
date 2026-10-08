@@ -1,9 +1,4 @@
-"""知识库 Tool（RAG 入口）。
-
-【官方对照】@tool + Args docstring，同 order_tools.py 文件头说明。
-【名字拆解】search_knowledge_base = search（搜索）+ knowledge base（知识库）。
-  用 search 而不是 get：按内容模糊找，不是按编号精确取。
-"""
+"""知识库检索 Tool（RAG 入口）。"""
 
 from __future__ import annotations
 
@@ -16,10 +11,12 @@ from service.rag.rag_service import RAGService
 def search_knowledge_base(query: str) -> dict:
     """检索企业知识库（政策、规则、使用说明等），返回最相关的知识片段。
 
+    当原始问题相关度不足时，RAG Service 先试领域规则；规则未改善时再调用 LLM
+    生成候选改写，并通过二次检索比较结果。Tool 不直接实现改写算法。
+
     Args:
         query: 检索问题或关键词
     """
     service = RAGService()
     result = service.search(query, top_k=3)
     return {"success": True, **result.to_dict()}
-    # ** 把字典里的键值「摊开」合并进外层字典

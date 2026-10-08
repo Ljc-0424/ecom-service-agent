@@ -29,10 +29,7 @@ app = FastAPI(
     description="Agent Core + 模拟电商业务系统 + Mock Console + 评测预留",
 )
 
-# CORS 中间件：解决浏览器「跨域」限制。
-# 浏览器安全策略默认禁止「页面 A 端口」的 JS 请求「服务 B 端口」
-# （前端开发服务器和 8000 端口不同源）。这个中间件在响应里加「允许跨域」头放行；
-# V1 用 ["*"] 全放开，正式部署应改成具体的前端域名。
+# 开发配置允许跨域；正式部署应限制为实际前端来源。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -41,8 +38,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# include_router：把各文件里定义的接口挂到主应用上
-# prefix 是统一前缀，如 mock.py 里的 /orders 实际路径是 /api/mock/orders
 app.include_router(chat.router, prefix="/api", tags=["agent"])
 app.include_router(orders.router, prefix="/api", tags=["orders"])
 app.include_router(mock.router, prefix="/api/mock", tags=["mock"])
@@ -50,18 +45,11 @@ app.include_router(mock.router, prefix="/api/mock", tags=["mock"])
 
 @app.on_event("startup")
 def on_startup() -> None:
-    """启动钩子：初始化目录、种子数据与知识向量库。
-
-    【@app.on_event("startup") 语法】
-      FastAPI 的启动钩子：服务开始接收请求「之前」自动执行一次，
-      适合做初始化（建目录、灌数据、建索引这类一次性工作）。
-    """
+    """初始化运行目录、演示数据和知识库索引。"""
     settings.ensure_dirs()
     db = get_business_db()
-    # 首次启动灌入演示数据（库里已有商品说明不是第一次，跳过）
     if db.list_products() == []:
         seed_demo_data(db)
-    # 构建/加载知识向量：有缓存读缓存，没缓存从 knowledge/ 全量重建
     store = VectorStore.get_default()
     store.load_or_build()
     if not store.chunks:

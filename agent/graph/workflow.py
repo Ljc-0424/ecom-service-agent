@@ -1,29 +1,6 @@
-"""LangGraph 工作流：把节点连成官方 Quickstart 同款的「Agent Loop」。
+"""LangGraph 工作流装配、同步/流式运行及订单选择事件处理。
 
-【这个文件在干什么】
-  1. build_agent_graph      —— 官方 §6 同款：建图 + 编译成可执行图
-  2. run_agent              —— 跑一轮：用户说一句话 → 得到最终回答
-  3. apply_order_selection  —— V1 订单选择结构化事件（前端联动）
-  4. extract_final_answer / extract_handoff —— 给 API 层取结果用
-
-【图长什么样（V1 需求文档定稿结构）】
-    START
-      ↓
-    [llm] ──should_continue──→ END（无 tool_calls）
-      ↑         │
-      │         ├─→ [tools] ──────────┘（有普通 tool_calls，循环）
-      │         └─→ [human_handoff] ──→ END（调用了 handoff_to_human）
-
-【官方对照】（LangGraph Quickstart · Graph API §6）
-  builder = StateGraph(MessagesState)
-  builder.add_node("llm_call", llm_call)
-  builder.add_node("tool_node", tool_node)
-  builder.add_edge(START, "llm_call")
-  builder.add_conditional_edges("llm_call", should_continue, ["tool_node", END])
-  builder.add_edge("tool_node", "llm_call")
-  agent = builder.compile()
-  本项目差异：节点来自工厂函数（要注入 llm/runtime）、多了 human_handoff 节点、
-  State 用带业务字段的 AgentState。
+会话 API 通过 InMemorySaver 和 thread_id 保存多轮状态；测试与评测可无状态运行。
 """
 
 from __future__ import annotations
@@ -45,36 +22,23 @@ from agent.runtime.context import RuntimeContext
 from agent.state.state import AgentState, OrderContext, empty_state
 from agent.tools.registry import get_tool_map
 
-# 会话检查点（官方 Checkpointer）：同一 thread_id 的多轮状态自动持久化，
-# invoke 时只传增量输入（本轮新消息），LangGraph 会把增量合并到已存状态上。
-# V1 用进程内 InMemorySaver（重启即失）；换 SQLiteSaver/PostgresSaver 只改这一行。
+# 检查点仅保存在进程内，服务重启后会话状态不会保留。
 _CHECKPOINTER = InMemorySaver()
 
 
 def build_agent_graph(llm: Any, runtime: RuntimeContext, checkpointer: Any = None):
-    """建图并编译（官方 §6 同款装配）。
-
-    【参数】
-      checkpointer —— 传入则开启多轮会话持久化（配合 thread_id 使用）；
-                      不传则无状态运行（单次运行：测试与评测用这条路径）。
-    【流程】
-      1. get_tool_map() 拿全部业务工具（官方 tools_by_name 惯例）
-      2. llm.bind_tools(tools) —— 绑定后模型才知道有哪些工具可调（官方同款）
-      3. 加节点、连边、条件路由、编译
-    """
+    """装配 Agent 状态图；可选启用会话检查点。"""
     tool_map = get_tool_map()
     llm_with_tools = llm.bind_tools(list(tool_map.values()))
 
     builder = StateGraph(AgentState)
 
-    # add_node：登记节点；make_xxx 返回真正的节点函数（闭包已捕获依赖）
     builder.add_node("llm", make_llm_node(llm_with_tools, runtime))
     builder.add_node("tools", make_tool_node(tool_map, runtime))
     builder.add_node("human_handoff", make_handoff_node(runtime))
 
-    builder.add_edge(START, "llm")  # 入口先到 LLM
+    builder.add_edge(START, "llm")
 
-    # 条件边：should_continue 返回的字符串对应下面字典的键（官方同款写法）
     builder.add_conditional_edges(
         "llm",
         should_continue,
@@ -85,8 +49,8 @@ def build_agent_graph(llm: Any, runtime: RuntimeContext, checkpointer: Any = Non
         },
     )
 
-    builder.add_edge("tools", "llm")        # 工具做完回 LLM（官方同款循环）
-    builder.add_edge("human_handoff", END)  # 转人工则结束（V1 扩展）
+    builder.add_edge("tools", "llm")
+    builder.add_edge("human_handoff", END)
     return builder.compile(checkpointer=checkpointer)
 
 
@@ -134,9 +98,6 @@ def run_agent(
         不传则只追加本轮消息——历史状态由检查点自动延续；
       session_id 为空（测试/评测路径）→ 无状态运行，state 是完整初始 State。
 
-    【官方对照】Checkpointer 官方用法：
-        graph.invoke(input, config={"configurable": {"thread_id": "1"}})
-      增量输入与检查点状态合并（messages 走 add_messages 追加）。
     """
     graph, input_state, config = _build_runtime_parts(user_id, session_id, llm)
 
@@ -145,12 +106,11 @@ def run_agent(
         for key, value in state.items():
             input_state[key] = value
 
-    # 本轮用户消息追加进 messages（官方同款：传 HumanMessage 进 graph）
     input_state["messages"] = list(input_state.get("messages") or []) + [
         HumanMessage(content=user_message)
     ]
 
-    # invoke：执行整张图直到 END；recursion_limit 防模型反复调工具死循环
+    # 限制图的最大执行步数，避免模型反复调用工具。
     return graph.invoke(input_state, config=config)
 
 
@@ -184,9 +144,6 @@ def stream_agent_events(
       {"type": "final", "result": <完整 State>}
         —— 流结束后的最终 State（调用方据此更新会话缓存与响应字段）
 
-    【官方对照】LangGraph Streaming：
-      graph.stream(input, config, stream_mode=["updates", "messages"])
-      updates 模式 → 每个节点跑完拿到增量；messages 模式 → LLM 输出的逐 token 块。
     """
     if not user_id:
         raise ValueError("user_id 不能为空")
@@ -283,7 +240,7 @@ def extract_final_answer(result: dict[str, Any]) -> str:
     """从运行结果里取「模型最后一次说的正文」（api/chat.py 在用）。
 
     【为什么从后往前】messages 后段是 ToolMessage / 中间回复；
-    倒序遇到的第一条 AIMessage 才是最终回答（官方 agent.invoke 返回同结构）。
+    倒序遇到的第一条 AIMessage 是最终回答。
     """
     for m in reversed(result.get("messages") or []):
         if isinstance(m, AIMessage):

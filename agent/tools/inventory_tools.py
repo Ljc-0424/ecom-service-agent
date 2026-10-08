@@ -1,8 +1,4 @@
-"""库存 Tool。
-
-【官方对照】@tool + Args docstring，同 order_tools.py 文件头说明。
-【名字拆解】get_inventory = get（获取）+ inventory（库存）。
-"""
+"""库存查询 Tool。"""
 
 from __future__ import annotations
 

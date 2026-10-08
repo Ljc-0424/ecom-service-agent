@@ -1,36 +1,18 @@
-"""基础测试：验证 Tool Calling Loop、订单服务规则、State Update。
+"""验证 Agent 管线、业务规则、权限边界和会话状态。
 
-测试使用 ScriptedStubLLM（脚本 tool_calls），验证 Graph/Tool/Service/State，
-不验证真实 LLM 理解能力。
-
-【怎么跑】
-  .venv/Scripts/python.exe -m pytest tests/ -q
-
-【unittest 速查】
-  class TestXxx(unittest.TestCase) —— 一个测试类；test_ 开头的方法 = 一个用例
-  setUpClass   —— 整个类跑之前执行一次（放昂贵的公共准备）
-  setUp        —— 每个用例「之前」都执行一次（保证用例之间互不影响）
-  assertEqual(a, b) / assertIsNone(x) / assertIn(a, b) —— 断言：
-                 条件不成立 → 该用例失败，测试报告会指出失败位置
-
-【为什么这里测不了「模型聪不聪明」】
-  用的是 ScriptedStubLLM：按剧本念台词，不思考。
-  它验证的是「管线通不通」：Graph 连线、Tool 执行、State 更新。
-  模型的真实决策质量要靠配好 API Key 后人工评测（后续评测框架的事）。
+ScriptedStubLLM 用于确定性地覆盖 Graph/Tool/Service 流程，不代表真实模型质量。
 """
 
 from __future__ import annotations
 
 import sys
 import unittest
+from datetime import datetime
 from pathlib import Path
 
-# 把项目根目录加进 Python 的模块搜索路径：
-# 直接运行本文件时，Python 默认找不到 agent/db 这些包（它们在上一级目录）
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# noqa: E402 = 告诉代码检查器「import 不在文件顶部是有意的」，别报警
 from agent.graph.workflow import (  # noqa: E402
     apply_order_selection,
     extract_final_answer,
@@ -39,6 +21,7 @@ from agent.graph.workflow import (  # noqa: E402
 from agent.llm.client import ScriptedStubLLM  # noqa: E402
 from agent.runtime.context import RuntimeContext  # noqa: E402
 from db.business.database import BusinessDatabase, set_business_db  # noqa: E402
+from db.business.models import LogisticsStatus, OrderStatus  # noqa: E402
 from db.business.seed import seed_demo_data  # noqa: E402
 from service.order.order_service import OrderService  # noqa: E402
 
@@ -175,6 +158,11 @@ class TestAgentLoop(unittest.TestCase):
         self.assertTrue(extract_final_answer(result))
         # Node 层根据 Tool 结果合并 orders_context
         self.assertTrue(result.get("orders_context"))
+        tool_events = [
+            event for event in result.get("trace", []) if event.get("type") == "tool"
+        ]
+        self.assertTrue(tool_events)
+        self.assertTrue(tool_events[-1].get("success"))
 
     def test_handoff_path(self) -> None:
         """验证 handoff_to_human 进入 Human Handoff。"""
@@ -196,13 +184,99 @@ class TestAgentLoop(unittest.TestCase):
         self.assertIsNotNone(result.get("handoff"))
         self.assertEqual(result.get("handoff", {}).get("status"), "handed_off")
 
+    def test_unknown_tool_is_recorded_as_failed_without_crashing(self) -> None:
+        """未知工具只产生失败 Trace，不应让整轮 Agent 直接崩溃。"""
+        stub = ScriptedStubLLM(
+            script=[
+                {"tool_calls": [{"name": "not_a_real_tool", "args": {}}]},
+                {"content": "暂时无法查询该信息。"},
+            ]
+        )
+        result = run_agent(
+            user_message="查询一个不存在的能力",
+            user_id="U001",
+            state=_empty_state(),
+            llm=stub,
+        )
+        failed_tools = [
+            event
+            for event in result.get("trace", [])
+            if event.get("type") == "tool" and not event.get("success")
+        ]
+        self.assertEqual(len(failed_tools), 1)
+        self.assertIn("未知工具", failed_tools[0].get("error", ""))
+
+
+class TestBusinessStateLoop(unittest.TestCase):
+    """验证 Mock Console 与 Agent 读取的是同一套业务事实。"""
+
+    def setUp(self) -> None:
+        self.db = BusinessDatabase(db_path=PROJECT_ROOT / "data" / "test_ecom.db")
+        self.db.reset_and_seed(seed_demo_data)
+        set_business_db(self.db)
+
+    def test_mock_update_is_visible_to_agent_query(self) -> None:
+        from api.mock import UpdateLogisticsRequest, update_logistics
+
+        update_logistics(
+            "A001",
+            UpdateLogisticsRequest(
+                logistics_status=LogisticsStatus.SHIPPING,
+                current_location="杭州转运中心",
+            ),
+        )
+
+        order = OrderService(self.db).get_order("A001", user_id="U001")
+        self.assertIsNotNone(order)
+        self.assertEqual(order.order_status, OrderStatus.SHIPPED)
+
+        stub = ScriptedStubLLM(
+            script=[
+                {"tool_calls": [{"name": "get_order", "args": {"order_id": "A001"}}]},
+                {"content": "A001 已发货，当前正在运输中。"},
+            ]
+        )
+        result = run_agent(
+            user_message="A001 现在是什么状态？",
+            user_id="U001",
+            state=_empty_state(),
+            llm=stub,
+        )
+        self.assertEqual(
+            result["orders_context"]["A001"]["order_status"], OrderStatus.SHIPPED
+        )
+
+    def test_new_order_default_promised_time_is_in_future(self) -> None:
+        from api.mock import _default_promised
+
+        promised = datetime.strptime(_default_promised(), "%Y-%m-%d %H:%M:%S")
+        self.assertGreater(promised, datetime.now())
+
+
+class TestSessionOwnership(unittest.TestCase):
+    """会话 ID 不能被另一个用户复用。"""
+
+    def setUp(self) -> None:
+        from db.session.store import SessionStore
+
+        SessionStore.set_default(SessionStore())
+
+    def test_session_cannot_be_reused_by_another_user(self) -> None:
+        from api.chat import _ensure_session
+        from fastapi import HTTPException
+
+        session_id = _ensure_session("U001", "SESSION-BOUNDARY")
+        self.assertEqual(session_id, "SESSION-BOUNDARY")
+        with self.assertRaises(HTTPException) as context:
+            _ensure_session("U002", session_id)
+        self.assertEqual(context.exception.status_code, 403)
+
 
 class TestCheckpointerMemory(unittest.TestCase):
     """Checkpointer + thread_id：多轮会话状态由检查点延续。
 
     【测什么】
-      同一 session_id 连续两轮对话，第二轮的 State 应包含第一轮的消息——
-      这就是官方 Checkpointer 替换手写会话缓存后的核心保证。
+      同一 session_id 连续两轮对话，第二轮的 State 应包含第一轮的消息。
     """
 
     def test_multi_turn_continuity(self) -> None:

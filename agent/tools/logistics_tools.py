@@ -1,8 +1,4 @@
-"""物流 Tool：实时查物流（不要信历史聊天里的「已发货」）。
-
-【官方对照】@tool + Args docstring，同 order_tools.py 文件头说明。
-【名字拆解】get_logistics = get（获取）+ logistics（物流）。
-"""
+"""物流查询 Tool：使用当前物流数据，不依赖历史对话中的状态描述。"""
 
 from __future__ import annotations
 

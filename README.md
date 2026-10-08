@@ -1,6 +1,6 @@
 # 电商客服 Agent · 第一版
 
-> 电商智能客服 Agent + 模拟电商业务系统 + 模拟业务控制台 + 评测预留  
+> 电商智能客服 Agent + 模拟电商业务系统 + 模拟业务控制台 + 最小真实模型回归
 > 技术栈：**Python 3.11 / LangGraph / FastAPI / SQLite / Vue 3(CDN)**
 
 ## 项目定位
@@ -45,7 +45,7 @@ ecom-service-agent/
 ├── api/                # FastAPI：/api/chat、/api/orders、/api/mock/*
 ├── frontend/           # Vue 3 单页：聊天 + 订单 + 模拟业务控制台
 ├── knowledge/          # 企业知识 Markdown（退换货/发货/售后/商品/客服规范）
-├── evaluation/         # 评测预留：datasets / cases / runner / metrics / reports
+├── evaluation/         # 最小真实模型回归：12 条 case + JSON 报告
 ├── tests/              # 基础测试（Agent Loop / State / 确定性规则）
 ├── config/             # 环境变量配置
 ├── data/               # SQLite / 向量 / 会话落盘目录
@@ -72,9 +72,11 @@ Chat Interface                 Mock Business Console
      ↓
     RAG
      ↓
- Vector Store
+    Direct Retrieval
+      ↓ low relevance
+    Rule Rewrite → if not improved, LLM Rewrite → Compare Retrieval Results
 
-Evaluation Layer（预留）← Trace ← Agent Run
+Evaluation Runner（开发回归）← Trace ← Agent Run
 ```
 
 | 模块 | 职责 |
@@ -86,10 +88,10 @@ Evaluation Layer（预留）← Trace ← Agent Run
 | Tool | Agent 能力入口 |
 | Service | 业务逻辑 + 确定性规则 |
 | Business DB | 实时业务事实 |
-| RAG / Vector Store | 企业知识检索 |
+| RAG / Vector Store | 企业知识检索；低相关度时规则优先，规则结果仍低于阈值再尝试 LLM 改写，并比较候选结果 |
 | Human Handoff | 无法可靠自动处理时的人工作业入口 |
 | Mock Console | 业务状态模拟器 / Agent 测试环境 |
-| Evaluation | 数据集、Trace、指标（预留） |
+| Evaluation | 小样本 case、Trace、确定性断言（开发回归） |
 
 ---
 
@@ -145,6 +147,8 @@ python -m uvicorn api.main:app --host 0.0.0.0 --port 8000
 python -m pytest tests/ -q
 ```
 
+测试替身只验证 Graph、Tool、Service、State 的管线，不代表真实模型的决策质量。
+
 ---
 
 ## 核心业务场景
@@ -198,14 +202,14 @@ Mock API **不是** Agent Tool，也不直接修改 Agent State。
 
 ---
 
-## 最小评测
+## 最小真实模型回归
 
 ```bash
 python -m evaluation.run_eval                  # 真实模型跑全部 case（需 .env）
 python -m evaluation.run_eval --case 转人工     # 只跑指定 case
 ```
 
-12 条 case 覆盖：订单列表 / 指定订单物流 / 库存 / 售后进度 / 知识检索 / 越权拦截 / 无效单号 / 多订单消歧 / 转人工 / 闲聊不调工具 / 超时未发货 / 组合查询。
+当前有 12 条小样本 case，覆盖：订单列表 / 指定订单物流 / 库存 / 售后进度 / 知识检索 / 越权拦截 / 无效单号 / 多订单消歧 / 转人工 / 闲聊不调工具 / 超时未发货 / 组合查询。
 
 每条 case 断言三类**确定性可验证**的事实：
 
@@ -214,6 +218,8 @@ python -m evaluation.run_eval --case 转人工     # 只跑指定 case
 - **State 维护**：orders_context 是否正确合并、active_order_id 是否未被 LLM 越权修改、该转人工时是否转
 
 最终回答的文字质量不自动打分（自然语言没有唯一正确答案），保存在 `evaluation/reports/*.json` 中供人工抽查。评测使用独立数据库 `data/eval_ecom.db`，每条 case 前重置为种子状态，保证**可重复**。
+
+这不是生产质量指标，也不等价于企业真实客服数据上的准确率；它的作用是让工具选择、关键参数、越权边界和 State 变化可以回归验证。
 
 原则：
 
@@ -240,10 +246,17 @@ Multi-Agent、MCP、A2A、复杂 Middleware、自动退款/取消/改地址、�
 | Phase 2 | 业务 Tool + OrderService + 模拟 DB | ✅ |
 | Phase 3 | orders_context / active_order_id / 消歧 | ✅ |
 | Phase 4 | Inventory / Logistics / AfterSale / Product | ✅ |
-| Phase 5 | RAG 知识库检索 | ✅ |
+| Phase 5 | RAG 检索 + 低相关度规则/LLM 混合 Query Rewrite | ✅ |
 | Phase 6 | 综合业务问题（订单+规则） | ✅ |
 | Phase 7 | Human Handoff + HandoffContext | ✅ |
 | 附加 | Mock Console + 前端 | ✅ |
-| Phase 8 | 最小评测闭环（12 case，工具/参数/State 断言） | ✅ |
+| Phase 8 | 最小真实模型回归（12 case，工具/参数/State 断言） | ✅ |
 | Phase 9 | SSE 流式输出 + Checkpointer 多轮会话 | ✅ |
-| Phase 10 | LangSmith 可观测性 | 进行中 |
+| Phase 10 | LangSmith 等外部可观测平台 | [POST-V1] 未实现 |
+
+## 面试口径与当前边界
+
+- 这是个人完成的模拟电商业务系统，不是真实企业客服项目。
+- 业务数据来自 SQLite Mock Business DB；Mock Console 和 Agent 查询同一套数据。
+- 真实运行需要配置 OpenAI-compatible LLM；`ScriptedStubLLM` 只用于稳定测试。
+- 当前重点是 Agent Loop、业务边界和可回归验证，不追求 Multi-Agent、MCP、微服务或大规模并发。

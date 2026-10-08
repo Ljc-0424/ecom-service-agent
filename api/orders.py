@@ -1,14 +1,4 @@
-"""订单查询 API：供前端订单面板使用。业务数据均来自 Business DB。
-
-【这个文件在干什么】
-  纯「查数据」的接口，和 Agent 无关：前端展示订单列表/详情时直接调这里，
-  不经过 LLM（列表展示不需要智能，走 Agent 又慢又浪费）。
-
-【语法速查】
-  def list_orders(user_id: str) —— 函数参数会自动变成 URL 查询参数：
-                                    GET /api/orders?user_id=U001
-  HTTPException(404)            —— 抛出后 FastAPI 自动转成对应 HTTP 错误响应
-"""
+"""订单面板查询 API；直接读取业务数据，不经过 Agent。"""
 
 from __future__ import annotations
 
@@ -32,7 +22,6 @@ def list_orders(user_id: str) -> dict[str, Any]:
     orders = service.list_user_orders(user_id)
     return {
         "user_id": user_id,
-        # 每个订单对象转成字典，FastAPI 会把整个 dict 序列化成 JSON
         "orders": [o.to_dict() for o in orders],
     }
 

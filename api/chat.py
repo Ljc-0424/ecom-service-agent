@@ -1,29 +1,4 @@
-"""Chat API：浏览器和 Agent 之间的桥。
-
-【这个文件在干什么】
-  前端只发 HTTP；不参与 Agent 内部怎么想。
-
-  POST /api/chat           —— 用户说话，返回机器人回答
-  POST /api/order-selection —— 用户点选了某笔订单
-  GET  /api/chat/{id}/state —— 看当前会话状态（调试用）
-
-【一次聊天的流程】
-  前端 fetch
-    ↓
-  chat() 校验 user_id
-    ↓
-  找到/新建会话 State
-    ↓
-  run_agent() 跑完整图
-    ↓
-  把回答、订单上下文、是否要选订单…打包返回 JSON
-
-【语法速查】
-  APIRouter()     —— 一组接口的集合，最后挂到主 app 上
-  @router.post()  —— 声明「POST 路径」的接口
-  class ChatRequest(BaseModel) —— 请求体格式（自动校验）
-  HTTPException   —— 抛出后变成 400/404 等 HTTP 错误
-"""
+"""Chat API：处理会话归属、订单选择事件，并调用 Agent 工作流。"""
 
 from __future__ import annotations
 
@@ -31,7 +6,7 @@ import json
 import uuid
 from typing import Any, Iterator, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -57,8 +32,12 @@ def _ensure_session(user_id: str, session_id: str) -> str:
     store = SessionStore.get_default()
     if not session_id:
         session_id = f"S{uuid.uuid4().hex[:12]}"  # 随机短 ID
-    if store.get_session(session_id) is None:
+    existing = store.get_session(session_id)
+    if existing is None:
         store.create_session(user_id=user_id, session_id=session_id)
+    elif existing.user_id != user_id:
+        # 会话 ID 是客户端传入的，不能仅凭 ID 就把另一个用户的检查点交给当前用户。
+        raise HTTPException(status_code=403, detail="会话不属于当前用户")
     return session_id
 
 
@@ -66,7 +45,6 @@ class ChatRequest(BaseModel):
     """聊天请求体：前端 POST 时的 JSON 字段。"""
 
     message: str = Field(..., description="用户消息")
-    # ... 表示必填
     user_id: str = Field(..., description="当前用户 ID，由前端显式传入")
     session_id: str = Field(default="", description="会话 ID，空则新建")
 
@@ -286,11 +264,16 @@ def order_selection(req: OrderSelectionRequest) -> ChatResponse:
 
 
 @router.get("/chat/{session_id}/state")
-def get_chat_state(session_id: str) -> dict:
-    """调试用：看某会话当前 active_order_id / orders_context（SessionStore 镜像）。"""
+def get_chat_state(
+    session_id: str,
+    user_id: str = Query(..., description="当前用户 ID，用于校验会话归属"),
+) -> dict:
+    """调试用：查看当前用户自己的会话摘要。"""
     rec = SessionStore.get_default().get_session(session_id)
     if not rec:
         raise HTTPException(status_code=404, detail="session not found")
+    if rec.user_id != user_id:
+        raise HTTPException(status_code=403, detail="会话不属于当前用户")
     return {
         "session_id": session_id,
         "active_order_id": rec.active_order_id,
@@ -306,7 +289,10 @@ def _persist_session(sid: str, user_id: str, result: dict[str, Any]) -> None:
       找到/创建会话记录 → 写入订单上下文、handoff、精简消息列表
     """
     store = SessionStore.get_default()
-    rec = store.get_session(sid) or store.create_session(user_id=user_id, session_id=sid)
+    rec = store.get_session(sid)
+    if rec is not None and rec.user_id != user_id:
+        raise HTTPException(status_code=403, detail="会话不属于当前用户")
+    rec = rec or store.create_session(user_id=user_id, session_id=sid)
     rec.user_id = user_id
     rec.orders_context = result.get("orders_context") or {}
     rec.active_order_id = result.get("active_order_id")

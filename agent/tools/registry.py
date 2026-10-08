@@ -1,18 +1,4 @@
-"""业务 Tool 注册表：所有 Agent 可用工具的「总名单」。
-
-【这个文件在干什么】
-  1. _ALL_TOOL_FUNCTIONS —— 名单本身：新增工具时，import 后登记到这里
-  2. get_all_tools()     —— 名单 → 工具对象列表（绑定给 LLM 用）
-  3. get_tool_map()      —— 名字 → 工具对象（工具节点按名字执行）
-
-【官方对照】（LangGraph Quickstart §1）
-  官方写法：
-      tools = [add, multiply, divide]
-      tools_by_name = {tool.name: tool for tool in tools}
-      model_with_tools = model.bind_tools(tools)
-  本项目 get_tool_map() 就是官方 tools_by_name 的函数版；
-  build_agent_graph 里 bind_tools(list(tool_map.values())) 对应官方 bind_tools(tools)。
-"""
+"""集中注册 Agent 可用工具，并提供工具列表和名称映射。"""
 
 from __future__ import annotations
 
@@ -27,7 +13,7 @@ from agent.tools.logistics_tools import get_logistics
 from agent.tools.order_tools import get_order, get_user_orders
 from agent.tools.after_sale_tools import get_after_sale
 
-# 名单：加新 Tool 的唯一要改的地方
+# 新增 Tool 时在此注册。
 _ALL_TOOL_FUNCTIONS: list[Callable[..., Any]] = [
     get_user_orders,
     get_order,
@@ -40,11 +26,7 @@ _ALL_TOOL_FUNCTIONS: list[Callable[..., Any]] = [
 
 
 def get_all_tools() -> list[BaseTool]:
-    """获取全部已注册业务 Tool 列表（对应官方 tools = [...]）。
-
-    @tool 装饰器把普通函数变成 BaseTool 对象（带 .name 属性）；
-    hasattr 检查是防御：万一有人误把普通函数放进名单，这里过滤掉。
-    """
+    """获取已注册且符合工具接口的业务 Tool。"""
     tools: list[BaseTool] = []
     for fn in _ALL_TOOL_FUNCTIONS:
         if hasattr(fn, "name"):
@@ -53,9 +35,5 @@ def get_all_tools() -> list[BaseTool]:
 
 
 def get_tool_map() -> dict[str, BaseTool]:
-    """获取工具名 → 工具对象的映射（对应官方 tools_by_name）。
-
-    字典推导式：{t.name: t for t in get_all_tools()}
-    工具节点拿模型说的工具名来这里查：tool_map.get(name)。
-    """
+    """获取工具名到工具对象的映射，供工具节点分发调用。"""
     return {t.name: t for t in get_all_tools()}

@@ -1,9 +1,4 @@
-"""售后 Tool：只查询，不自动退款。
-
-【官方对照】@tool + Args docstring，同 order_tools.py 文件头说明。
-【名字拆解】get_after_sale = get（获取）+ after_sale（售后）。
-【安全边界】退款是敏感操作，V1 只读；真要退款走 handoff_to_human 转人工。
-"""
+"""售后查询 Tool；仅查询状态，不执行退款等敏感操作。"""
 
 from __future__ import annotations
 
@@ -22,8 +17,7 @@ def get_after_sale(order_id: str = "", after_sale_id: str = "", user_id: str = "
         user_id: 系统自动注入，无需填写
     """
     service = AfterSaleService()
-    # 「x or None」：空字符串统一转 None，Service 端好判断「参数有没有传」；
-    # user_id 传入后 Service 会校验归属，查别人的售后一律返回查无结果
+    # Service 校验售后记录与用户的归属关系。
     info = service.get_after_sale(
         after_sale_id=after_sale_id or None,
         order_id=order_id or None,

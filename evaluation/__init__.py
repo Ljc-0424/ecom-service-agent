@@ -1,7 +1,5 @@
-"""Evaluation 预留：V1 只保留 Trace 观察能力。
+"""最小真实模型回归脚本。
 
-正式评测（Tool Selection / Arguments / State / RAG / Final Answer / E2E）
-留到后续阶段，见 TODO.md。
+当前只验证工具选择、关键参数和 State 变化，不是完整评测平台，
+也不自动评价自然语言回答质量。
 """
-
-# [POST-V1] 评测框架，不在 V1 实现

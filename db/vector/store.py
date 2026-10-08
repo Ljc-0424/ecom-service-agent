@@ -1,30 +1,6 @@
-"""轻量向量检索：Embedding 模型向量化（默认）+ 词袋回退 + 余弦相似度。
+"""知识向量存储：支持 Embedding 检索与本地词袋回退。
 
-【这个文件在干什么】
-  把 knowledge/ 目录的企业知识变成「能被搜到」的数据，分四步：
-    1. 切块   _chunk_markdown —— 每篇 Markdown 按标题切成小段
-    2. 切词   _tokenize       —— 每段拆成词（中文按相邻两字组合）
-    3. 向量化 _embed_texts    —— 按后端把每段变成一串数字
-    4. 检索   search          —— 查询同样向量化，找「方向最接近」的 Top-K
-
-【两种向量后端（按 .env 配置自动选择，索引缓存记录后端并自愈）】
-  embedding —— 配置了 EMBEDDING_API_KEY / EMBEDDING_MODEL 时启用：
-               调用 OpenAI 兼容 /embeddings 接口（默认硅基流动 BAAI/bge-m3，
-               中文语义向量，能命中同义改写，如「退券」也能召回「退款」政策）
-  bow       —— 未配置时回落词袋向量：纯 Python 统计词频，离线零依赖
-               （语义弱：字面不重叠就召回不了，作为无 Key 时的兜底）
-
-  注意：两种后端的向量空间不通用，所以缓存里记录了 backend/model，
-  加载时发现与当前配置不一致会**自动重建**，不需要手动删缓存。
-
-【谁在用】
-  service/rag/rag_service.py → agent/tools/knowledge_tools.py：
-  LLM 调 search_knowledge_base 工具时走到这里。
-
-【语法速查】
-  @dataclass / field(default_factory=...) / @classmethod / nonlocal —— 见此前文件
-  httpx.Client(trust_env=False) —— 不读系统代理环境变量直连目标
-  （本机代理会把到国内 API 的 TLS 掐断，所以这里明确直连）
+索引缓存记录 backend/model；配置变更时自动重建，避免不同向量空间混用。
 """
 
 from __future__ import annotations
@@ -53,9 +29,7 @@ def _tokenize(text: str) -> list[str]:
     """
     text = text.lower()
     tokens: list[str] = []
-    # 英文/数字：正则 [a-z0-9]+ 匹配连续的小写字母或数字串
     tokens.extend(re.findall(r"[a-z0-9]+", text))
-    # 中文连续段：[一-鿿] 覆盖常用汉字的 Unicode 范围
     for seg in re.findall(r"[一-鿿]+", text):
         if len(seg) == 1:
             tokens.append(seg)
@@ -372,7 +346,7 @@ class VectorStore:
         q_vec = _normalize(self._embed_query(query))
         scored: list[tuple[float, ChunkRecord]] = []
         for chunk in self.chunks:
-            # zip 按位配对 → 对应位相乘求和 = 点积；跳过没有向量的脏块
+            # 向量均已归一化，点积即余弦相似度。
             if not chunk.vector:
                 continue
             score = sum(a * b for a, b in zip(q_vec, chunk.vector))

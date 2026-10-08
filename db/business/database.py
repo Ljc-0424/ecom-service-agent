@@ -1,19 +1,4 @@
-"""业务数据库访问层。
-
-第一版使用 SQLite 单文件，模拟实时业务事实。
-Agent Tool 与 Mock Console 最终都读写这一套数据。
-
-【调用链】
-  LLM → Tool → Service → 本文件 → sqlite3 → data/ecom.db
-  前端 Mock Console → Mock API → Service → 本文件（同一条链的尾段）
-
-  Service 只调用本文件的方法，不写 SQL；SQL 细节全部收在这里。
-
-【语法速查】
-  @contextmanager + yield —— 把函数变成 with 语句可用的「上下文管理器」
-  ON CONFLICT ... DO UPDATE —— SQLite 的 upsert：存在则更新，不存在则插入
-  sqlite3.Row              —— 让查询结果能按列名取值（row["order_id"]）
-"""
+"""SQLite 业务数据访问层，供业务 Service 读写模拟订单、商品和售后数据。"""
 
 from __future__ import annotations
 
@@ -129,7 +114,6 @@ class BusinessDatabase:
         【流程】
           记下路径 → 确保所在目录存在 → 建表（已存在就跳过）
         """
-        # 三元表达式：传了 db_path 就用它，否则回落到全局配置
         self.db_path = Path(db_path) if db_path else settings.sqlite_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)  # data 目录不存在则建
         self._init_schema()
@@ -148,63 +132,31 @@ class BusinessDatabase:
 
     @contextmanager
     def cursor(self) -> Iterator[sqlite3.Cursor]:
-        """上下文管理器：提供游标，with 块结束时自动提交并关闭连接。
-
-        【为什么需要】
-          数据库操作有两条铁律：改完数据要 commit（不提交等于白改），
-          用完要 close（不关连接会泄漏）。包成上下文管理器后，
-          这两个收尾动作由 Python 自动完成，每个查询方法只管写 SQL。
-
-        【@contextmanager + yield 的工作方式】
-          调用方写 with self.cursor() as cur: 时：
-            1. 进入本函数，执行到 yield 那行暂停，把 cur 交给 as 后面的变量
-            2. with 块里的代码开始执行
-            3. with 块正常结束 → 回到 yield 之后，执行 conn.commit() 和 close()
-            4. with 块里抛了异常 → 跳过 commit（改动作废），但 finally
-               里的 close() 仍然会执行，连接不会泄漏
-        """
+        """提供数据库游标；正常退出时提交，异常时关闭连接。"""
         conn = self._connect()
         try:
-            cur = conn.cursor()  # 游标：执行 SQL、取结果的对象
+            cur = conn.cursor()
             yield cur
-            conn.commit()  # with 块正常结束才会走到这里：把改动落盘
+            conn.commit()
         finally:
-            # 无论成功还是出错都要关连接，所以放 finally
             conn.close()
 
     def _init_schema(self) -> None:
         """初始化业务表结构（执行上面的建表脚本）。"""
         with self.cursor() as cur:
-            # executescript：一次执行脚本里的多条 SQL（普通 execute 只能一条）
             cur.executescript(_SCHEMA)
 
     # ---- User ----
 
     def get_user(self, user_id: str) -> Optional[User]:
-        """按用户 ID 查询用户。
-
-        【三个固定套路（本文件所有查询方法都遵循）】
-          1. cur.execute(sql, (参数,)) —— 用 ? 占位符 + 元组传参，由 sqlite3
-             负责安全转义，防 SQL 注入。不要用 f-string 拼 SQL。
-          2. cur.fetchone() 取一行（查不到返回 None）；fetchall() 取全部行
-          3. User(**dict(row)) —— dict(row) 把一行转成 {"user_id": ...}，
-             ** 再摊开成关键字参数，等价于 User(user_id=..., username=...)
-        """
+        """按用户 ID 查询用户，使用参数化 SQL 避免拼接查询语句。"""
         with self.cursor() as cur:
             cur.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
             row = cur.fetchone()
-        return User(**dict(row)) if row else None  # 三元：查不到返回 None
+        return User(**dict(row)) if row else None
 
     def upsert_user(self, user: User) -> None:
-        """新增或更新用户。
-
-        【UPSERT 语法（本文件所有 upsert_xxx 都用它）】
-          INSERT ... ON CONFLICT(主键) DO UPDATE：
-          主键冲突（这条记录已存在）时不报错，改走 UPDATE 分支。
-          excluded.xxx 指「本次想插入、但被冲突拦下的那个新值」。
-          一条 SQL 同时覆盖「新增」和「更新」两种情况，所以叫 upsert
-          （update + insert 的合成词）。
-        """
+        """新增或更新用户记录。"""
         with self.cursor() as cur:
             cur.execute(
                 """INSERT INTO users (user_id, username, phone)
@@ -495,15 +447,7 @@ _business_db: Optional[BusinessDatabase] = None
 
 
 def get_business_db() -> BusinessDatabase:
-    """获取全局业务数据库单例；第一次调用时才创建。
-
-    【为什么用单例】
-      数据库对象全项目只要一份：API、Tool、Service 都连同一个 .db 文件，
-      才能看到同一套数据。
-    【global 语法】
-      函数里给模块级变量赋值前必须写 global _business_db，
-      否则 Python 会把它当成新的局部变量。
-    """
+    """获取全局业务数据库单例，供 API、Tool 和 Service 共用。"""
     global _business_db
     if _business_db is None:
         _business_db = BusinessDatabase()

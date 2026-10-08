@@ -112,13 +112,7 @@ class LogisticsService:
 
     @staticmethod
     def _to_info(logi) -> LogisticsInfo:
-        """将数据库模型转换为业务结果对象。
-
-        【@staticmethod 语法】
-          静态方法：不需要访问实例（没有 self 参数），
-          只是逻辑上「属于这个类」所以放在类里。
-          调用：LogisticsService._to_info(x) 或实例调用都可以。
-        """
+        """将数据库模型转换为业务结果对象。"""
         return LogisticsInfo(
             tracking_number=logi.tracking_number,
             order_id=logi.order_id,

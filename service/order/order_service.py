@@ -1,18 +1,4 @@
-"""订单业务 Service：真正写业务规则的地方。
-
-【这个文件在干什么】
-  Tool 只是「外壳」；查库、算是否超时等逻辑在这里。
-  Service 不调用 LLM。
-
-【和 Tool 的关系】
-  Tool: get_order()           —— 给模型用的接口
-  Service: OrderService.get_order() —— 干活的业务层
-
-【语法速查】
-  @dataclass     —— 数据类，自动有构造函数和 to_dict 用的 asdict
-  Optional[X]    —— 可以是 X 类型，也可以是 None
-  -> OrderInfo   —— 返回值类型标注
-"""
+"""订单业务逻辑：查询、归属校验、结果组装及发货超时判断。"""
 
 from __future__ import annotations
 
@@ -39,8 +25,8 @@ class OrderSummary:
     has_after_sale: bool  # 是否挂了售后单
 
     def to_dict(self) -> dict[str, Any]:
-        """转成字典，方便塞进 ToolMessage。"""
-        return asdict(self)  # dataclass 自带：转成 {"字段名": 值}
+        """返回可序列化的订单摘要。"""
+        return asdict(self)
 
 
 @dataclass

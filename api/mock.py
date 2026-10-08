@@ -1,28 +1,11 @@
-"""Mock Business API：模拟业务控制台写入接口。
+"""Mock Console 写入 API：通过 Service 更新 Agent 使用的同一套模拟业务数据。
 
-职责隔离：
-  Mock Console → Mock API → Service → Business DB
-  LLM → Tool → Service → Business DB
-
-两条路径操作同一套模拟业务数据。
-Mock API 不是 Agent Tool，也不直接修改 Agent State。
-
-【这个文件什么时候用】
-  评测/演示时，用 Mock Console（前端页面）或直接 curl 调这些接口，
-  把业务数据改成想要的状态（发货、退款、改库存…），再观察 Agent 的反应。
-
-【语法速查】
-  class XxxRequest(BaseModel) —— 请求体格式声明：FastAPI 自动把请求 JSON
-                                 转成对象并校验类型，字段类型不对会返回 422
-  order.__dict__              —— dataclass 实例自带的「字段名→值」字典，
-                                 快速转 JSON 返回（正经项目一般用 asdict）
-  PATCH / PUT / POST          —— HTTP 语义：POST 新建、PATCH 部分更新、
-                                 PUT 整体更新（这里按惯例使用）
+这些接口仅用于项目演示与评测，不作为 Agent Tool，也不直接修改 Agent State。
 """
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -49,15 +32,12 @@ router = APIRouter()
 
 
 # ---- Schemas（请求体声明）----
-# Optional[str] = None 的含义：这个字段可以不传（不传 = None = 「不修改这一项」）
-# 没有默认值的字段（如 user_id）是必填
-
 class CreateOrderRequest(BaseModel):
     """下单请求体。"""
 
     user_id: str
     product_id: str
-    quantity: int = 1
+    quantity: int = Field(default=1, ge=1)
     specification: str = ""
     address: str = ""
     order_status: str = OrderStatus.PAID
@@ -97,7 +77,7 @@ class CreateAfterSaleRequest(BaseModel):
     after_sale_type: str = AfterSaleType.REFUND
     after_sale_status: str = AfterSaleStatus.PROCESSING
     refund_status: str = RefundStatus.PROCESSING
-    refund_amount: float = 0.0
+    refund_amount: float = Field(default=0.0, ge=0)
     reason: str = ""
 
 
@@ -113,7 +93,7 @@ class UpdateInventoryRequest(BaseModel):
     """设置库存请求体。"""
 
     product_id: str
-    available_stock: int
+    available_stock: int = Field(..., ge=0)
 
 
 # ---- 写操作（Mock Console）----
@@ -134,10 +114,8 @@ def create_order(req: CreateOrderRequest) -> dict[str, Any]:
     if product is None:
         raise HTTPException(status_code=404, detail="商品不存在")
 
-    # 现有订单数 + 100 作为编号起点；:03d 表示补足 3 位（M100、M101…）
     count = len(db.list_orders_by_user(req.user_id)) + 100
     order_id = f"M{count:03d}"
-    # strftime：把当前时间格式化成「年-月-日 时:分:秒」字符串
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     promised = req.promised_ship_time or _default_promised()
 
@@ -369,8 +347,8 @@ def reset_demo_data() -> dict[str, Any]:
 def _default_promised() -> str:
     """返回默认承诺发货时间。
 
-    【为什么固定写死】
-      下单时若没指定承诺时间，给一个「足够远的未来时间」，
-      保证新订单默认不算超时（超时规则见 OrderService.is_ship_overdue）。
+    下单时若没指定承诺时间，默认给两天后的时间，
+    保证新订单不会因为示例日期过期而刚创建就被判定为超时。
     """
-    return "2026-10-05 18:00:00"
+    promised = datetime.now() + timedelta(days=2)
+    return promised.strftime("%Y-%m-%d %H:%M:%S")
